@@ -28,7 +28,7 @@ Repository = "https://github.com/jejjohnson/mypackage"
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
-    "pre-commit>=3.7",
+    "pre-commit>=4.5.1",
 ]
 lint = [
     "ruff>=0.9",
