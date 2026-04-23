@@ -340,48 +340,27 @@ class GumbelType1GEVD(dist.Distribution):
         )
 
     def hazard_rate(self, value: jnp.ndarray) -> jnp.ndarray:
+        r"""Hazard rate :math:`h(x) = f(x) / S(x)` for the Gumbel.
+
+        With :math:`F(x) = \exp(-e^{-z})` and :math:`z = (x - \mu)/\sigma`,
+        :math:`S(x) = 1 - F(x) = -\mathrm{expm1}(-e^{-z})`, so the hazard
+        does *not* simplify to :math:`e^{z}/\sigma` — the upper-tail limit
+        is :math:`1/\sigma`, not diverging.
         """
-        Compute the hazard rate h(x) = f(x) / S(x).
-
-        For Gumbel Type I, the hazard rate increases exponentially:
-        h(x) = (1/σ) * exp((x - μ)/σ)
-
-        This represents the instantaneous failure rate and shows that
-        the risk increases exponentially with the magnitude of the extreme event.
-
-        Args:
-            value: Points at which to evaluate the hazard rate
-
-        Returns:
-            Hazard rate values
-        """
-        loc, scale = self.loc, self.scale
-        z = (value - loc) / scale
-
-        # Hazard rate: h(x) = (1/σ) * exp(z)
-        return jnp.exp(z) / scale
+        z = (value - self.loc) / self.scale
+        log_pdf = gumbel_log_prob(value, self.loc, self.scale)
+        # log S(x) = log(-expm1(-exp(-z))) — numerically stable across both tails.
+        log_surv = jnp.log(-jnp.expm1(-jnp.exp(-z)))
+        return jnp.exp(log_pdf - log_surv)
 
     def cumulative_hazard_rate(self, value: jnp.ndarray) -> jnp.ndarray:
+        r"""Cumulative hazard :math:`\Lambda(x) = -\log S(x)` for the Gumbel.
+
+        With :math:`S(x) = -\mathrm{expm1}(-e^{-z})`,
+        :math:`\Lambda(x) = -\log(-\mathrm{expm1}(-e^{-z}))`.
         """
-        Compute the cumulative hazard rate Λ(x) = -log(S(x)).
-
-        For Gumbel Type I:
-        Λ(x) = exp((x - μ)/σ)
-
-        This represents the accumulated hazard and has a simple
-        exponential form for the Gumbel distribution.
-
-        Args:
-            value: Points at which to evaluate the cumulative hazard rate
-
-        Returns:
-            Cumulative hazard rate values
-        """
-        loc, scale = self.loc, self.scale
-        z = (value - loc) / scale
-
-        # Cumulative hazard: Λ(x) = exp(z)
-        return jnp.exp(z)
+        z = (value - self.loc) / self.scale
+        return -jnp.log(-jnp.expm1(-jnp.exp(-z)))
 
     def return_level(self, return_period: float | jnp.ndarray) -> jnp.ndarray:
         """Return level. Thin wrapper for ``gumbel_return_level``."""

@@ -67,13 +67,15 @@ def gpd_cdf(
     t_valid = t > 0.0
     t_safe = jnp.where(t_valid, t, 1.0)
     pareto = 1.0 - jnp.power(t_safe, -1.0 / xi)
-    pareto = jnp.where(t_valid, pareto, 0.0)
+    # Beyond the support, ξ > 0 tails map out-of-support CDF to 0 (lower
+    # bound); ξ < 0 tails map it to 1 (finite upper bound, including the
+    # endpoint x = -σ/ξ where t = 0 exactly).
+    boundary = jnp.where(shape < 0, 1.0, 0.0)
+    pareto = jnp.where(t_valid, pareto, boundary)
 
     cdf = jnp.where(is_exp, exponential, pareto)
-    # Clamp to the support boundaries.
-    upper_bound = jnp.where(shape < 0, -scale / xi, jnp.inf)
-    cdf = jnp.where(x >= 0.0, cdf, 0.0)
-    return jnp.where(x <= upper_bound, cdf, 1.0)
+    # Clamp the universal lower bound (x < 0 is always out of support).
+    return jnp.where(x >= 0.0, cdf, 0.0)
 
 
 def gpd_icdf(

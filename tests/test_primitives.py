@@ -157,6 +157,24 @@ class TestGPD:
         lp = gpd_log_prob(jnp.array([-0.5, -1.0]), 1.0, 0.2)
         assert jnp.all(jnp.isneginf(lp))
 
+    def test_cdf_at_upper_bound_is_one(self):
+        """For shape < 0, CDF at x = -σ/ξ must be exactly 1 (not 0)."""
+        scale, shape = 1.0, -0.3
+        upper = -scale / shape
+        # at the endpoint and just past it
+        x = jnp.array([upper, upper + 1e-6])
+        c = gpd_cdf(x, scale, shape)
+        assert jnp.allclose(c, 1.0)
+
+    def test_cdf_approaches_one_near_upper_bound(self):
+        """CDF should be continuous at the upper endpoint, approaching 1."""
+        scale, shape = 1.0, -0.3
+        upper = float(-scale / shape)
+        x_inside = jnp.linspace(upper - 1e-3, upper, 8)
+        c = gpd_cdf(x_inside, scale, shape)
+        assert float(c[-1]) == pytest.approx(1.0, abs=1e-5)
+        assert jnp.all(jnp.diff(c) >= -1e-7)  # monotone non-decreasing
+
 
 class TestFrechet:
     def test_delegation_matches_gev(self):

@@ -10,6 +10,7 @@ import xarray as xr
 from xtremax.extraction import (
     constant_threshold,
     decluster_runs,
+    decluster_separation,
     quantile_threshold,
     rolling_threshold,
     seasonal_threshold,
@@ -61,6 +62,41 @@ class TestDecluster:
     def test_runs(self, daily_series):
         out = decluster_runs(daily_series, threshold=1.5, reduction="max")
         assert isinstance(out, xr.DataArray)
+
+    def test_separation_measures_original_time_steps(self):
+        """Regression: min_separation must count original time steps, not peaks apart.
+
+        Construct a sparse series with three isolated exceedance peaks at
+        positions [10, 25, 30] (values 5, 4, 3). With min_separation=10 and
+        the old buggy code (peak_times = 0..n_peaks-1), every peak is 1 apart
+        so only the largest would be kept. The correct behaviour keeps the
+        peak at 10 (value 5) and the one at 25 (5 > 10 steps away); 30 is
+        within 5 of 25 so gets dropped.
+        """
+        values = np.zeros(40, dtype=float)
+        # Each peak flanked by zeros so the "local max above threshold"
+        # detector picks only the peak indices.
+        values[10] = 5.0
+        values[25] = 4.0
+        values[30] = 3.0
+        time = pd.date_range("2020-01-01", periods=40, freq="D")
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+
+        out = decluster_separation(da, threshold=0.5, min_separation=10)
+
+        assert out.sizes["time"] == 2
+        assert set(out.values.tolist()) == {5.0, 4.0}
+
+    def test_separation_keeps_only_largest_when_all_too_close(self):
+        values = np.zeros(20, dtype=float)
+        values[5], values[8], values[11] = 3.0, 2.0, 4.0
+        time = pd.date_range("2020-01-01", periods=20, freq="D")
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+
+        out = decluster_separation(da, threshold=0.5, min_separation=10)
+
+        assert out.sizes["time"] == 1
+        assert float(out.values[0]) == 4.0
 
 
 # Quantile-regression threshold selection needs scikit-learn (optional

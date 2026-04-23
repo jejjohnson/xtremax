@@ -343,28 +343,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Survival probabilities
         """
-        scale, shape = self.shape, self.shape
-
-        # Support check
-        valid = (value >= 0.0) & (value <= self.upper_bound())
-
-        is_exponential = jnp.abs(shape) < self._exponential_threshold
-
-        def exponential_survival(x):
-            return jnp.exp(-x / scale)
-
-        def pareto_survival(x, xi):
-            t = 1.0 + xi * x / scale
-            t_valid = t > 0.0
-            surv_val = jnp.power(jnp.where(t_valid, t, 1.0), -1.0 / xi)
-            return jnp.where(t_valid, surv_val, 0.0)
-
-        surv_exp = exponential_survival(value)
-        surv_pareto = pareto_survival(value, shape)
-
-        survival_result = jnp.where(is_exponential, surv_exp, surv_pareto)
-
-        return jnp.where(valid, survival_result, 0.0)
+        return 1.0 - self.cdf(value)
 
     def hazard_rate(self, value: jnp.ndarray) -> jnp.ndarray:
         """

@@ -52,6 +52,17 @@ class TestGPD:
         assert jnp.all(jnp.isfinite(lp))
         assert jnp.all(samples >= 0)  # GPD support is x >= 0 when loc = 0
 
+    def test_survival_uses_scale_not_shape(self):
+        """Regression: survival_function previously aliased `scale = self.shape`.
+
+        With scale=2 and shape=0.3 the correct S(1) is a specific number;
+        the buggy version used `shape` as both the scale and shape, giving
+        a wildly different value. Verify against 1 - cdf().
+        """
+        d = GeneralizedParetoDistribution(scale=2.0, shape=0.3)
+        x = jnp.array([0.5, 1.0, 2.0, 5.0])
+        assert jnp.allclose(d.survival_function(x), 1.0 - d.cdf(x), atol=1e-6)
+
 
 class TestGumbel:
     def test_log_prob_and_sample_shape(self, key):
@@ -60,6 +71,30 @@ class TestGumbel:
         assert samples.shape == (32,)
         lp = dist.log_prob(samples)
         assert jnp.all(jnp.isfinite(lp))
+
+    def test_hazard_rate_matches_f_over_S(self):
+        """h(x) must equal f(x) / S(x), not exp(z)/σ."""
+        d = GumbelType1GEVD(loc=0.0, scale=2.0)
+        x = jnp.array([-1.0, 0.0, 1.0, 2.0, 3.0])
+        pdf = jnp.exp(d.log_prob(x))
+        surv = 1.0 - d.cdf(x)
+        expected = pdf / surv
+        assert jnp.allclose(d.hazard_rate(x), expected, rtol=1e-5)
+
+    def test_cumulative_hazard_matches_neg_log_survival(self):
+        """Λ(x) = -log S(x)."""
+        d = GumbelType1GEVD(loc=0.0, scale=2.0)
+        x = jnp.array([-1.0, 0.0, 1.0, 2.0, 3.0])
+        expected = -jnp.log(1.0 - d.cdf(x))
+        assert jnp.allclose(d.cumulative_hazard_rate(x), expected, rtol=1e-5)
+
+    def test_hazard_asymptotes_to_inverse_scale(self):
+        """At the far upper tail, h(x) → 1/σ (exponential-tail limit)."""
+        scale = 1.5
+        d = GumbelType1GEVD(loc=0.0, scale=scale)
+        x_far = jnp.array([20.0])  # deep in upper tail
+        h = d.hazard_rate(x_far)
+        assert jnp.allclose(h, 1.0 / scale, atol=1e-5)
 
 
 class TestFrechet:
