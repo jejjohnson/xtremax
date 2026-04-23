@@ -1,36 +1,45 @@
-"""xtremax: JAX/NumPyro-native library for extreme value modeling."""
+"""Pure-JAX primitive functions for extreme value distributions.
+
+Every function takes arrays and returns arrays. No NumPyro, no class
+state, no side effects — compatible with ``jax.jit``, ``jax.grad``, and
+``jax.vmap``.
+
+The Distribution classes in :mod:`xtremax.distributions` are thin
+wrappers that route ``log_prob`` / ``cdf`` / ``icdf`` / ``mean`` /
+``return_level`` to these primitives.
+"""
 
 from __future__ import annotations
 
-from xtremax import distributions, extraction, primitives, simulations
-from xtremax.distributions import (
-    FrechetType2GEVD,
-    GeneralizedExtremeValueDistribution,
-    GeneralizedParetoDistribution,
-    GumbelType1GEVD,
-    WeibullType3GEVD,
-)
-from xtremax.primitives import (
+from xtremax.primitives.frechet import (
     frechet_cdf,
     frechet_icdf,
     frechet_log_prob,
     frechet_mean,
     frechet_return_level,
+)
+from xtremax.primitives.gev import (
     gev_cdf,
     gev_icdf,
     gev_log_prob,
     gev_mean,
     gev_return_level,
+)
+from xtremax.primitives.gpd import (
     gpd_cdf,
     gpd_icdf,
     gpd_log_prob,
     gpd_mean,
     gpd_return_level,
+)
+from xtremax.primitives.gumbel import (
     gumbel_cdf,
     gumbel_icdf,
     gumbel_log_prob,
     gumbel_mean,
     gumbel_return_level,
+)
+from xtremax.primitives.weibull import (
     weibull_cdf,
     weibull_icdf,
     weibull_log_prob,
@@ -39,39 +48,32 @@ from xtremax.primitives import (
 )
 
 
-__version__: str = "0.0.0"
-
-
 __all__ = [
-    "FrechetType2GEVD",
-    "GeneralizedExtremeValueDistribution",
-    "GeneralizedParetoDistribution",
-    "GumbelType1GEVD",
-    "WeibullType3GEVD",
-    "distributions",
-    "extraction",
+    # Fréchet (GEV, ξ > 0)
     "frechet_cdf",
     "frechet_icdf",
     "frechet_log_prob",
     "frechet_mean",
     "frechet_return_level",
+    # GEV
     "gev_cdf",
     "gev_icdf",
     "gev_log_prob",
     "gev_mean",
     "gev_return_level",
+    # GPD
     "gpd_cdf",
     "gpd_icdf",
     "gpd_log_prob",
     "gpd_mean",
     "gpd_return_level",
+    # Gumbel (GEV, ξ = 0)
     "gumbel_cdf",
     "gumbel_icdf",
     "gumbel_log_prob",
     "gumbel_mean",
     "gumbel_return_level",
-    "primitives",
-    "simulations",
+    # Weibull (GEV, ξ < 0)
     "weibull_cdf",
     "weibull_icdf",
     "weibull_log_prob",
