@@ -1,7 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import xarray as xr
+
+
+_REDUCERS: dict[str, Callable[[np.ndarray], np.floating]] = {
+    "max": np.max,
+    "mean": np.mean,
+    "sum": np.sum,
+    "min": np.min,
+}
 
 
 def decluster_runs(
@@ -31,7 +41,11 @@ def decluster_runs(
     Returns
     -------
     xr.DataArray
-        Declustered values, one per run
+        Array with the same shape as ``da``. Run representatives are placed
+        at the last position of each run along ``dim`` and all other
+        positions are NaN. For multi-dimensional inputs, each non-``dim``
+        slice is declustered independently (so run IDs never collide
+        across slices).
 
     Examples
     --------
@@ -47,30 +61,45 @@ def decluster_runs(
     the threshold. Each continuous period (run) is treated as one
     cluster, and we extract one representative value per cluster.
     """
-    # Identify exceedances
+    if reduction not in _REDUCERS:
+        raise ValueError(f"Unknown reduction: {reduction}")
+    reducer = _REDUCERS[reduction]
+
     exceedances = da > threshold
 
-    # Label contiguous runs
-    # When exceedance status changes, start a new run
-    run_boundaries = exceedances != exceedances.shift({dim: 1})
-    run_ids = run_boundaries.cumsum(dim=dim)
+    def _decluster_runs_1d(values: np.ndarray, exc: np.ndarray) -> np.ndarray:
+        """Reduce each contiguous run of exceedances to a single value.
 
-    # Only keep run IDs where there are exceedances
-    run_ids = run_ids.where(exceedances)
+        The representative is stored at the last position of its run; all
+        other entries are NaN. Operating per 1-D slice keeps run IDs from
+        different batch rows (e.g. different ``site``s) from colliding.
+        """
+        n = values.shape[0]
+        out = np.full(n, np.nan, dtype=float)
+        if not exc.any():
+            return out
+        in_run = False
+        run_start = 0
+        for i in range(n):
+            if exc[i] and not in_run:
+                run_start = i
+                in_run = True
+            elif not exc[i] and in_run:
+                out[i - 1] = reducer(values[run_start:i])
+                in_run = False
+        if in_run:
+            out[n - 1] = reducer(values[run_start:n])
+        return out
 
-    # Apply reduction function to each run
-    if reduction == "max":
-        result = da.groupby(run_ids).max(dim=dim, skipna=True)
-    elif reduction == "mean":
-        result = da.groupby(run_ids).mean(dim=dim, skipna=True)
-    elif reduction == "sum":
-        result = da.groupby(run_ids).sum(dim=dim, skipna=True)
-    elif reduction == "min":
-        result = da.groupby(run_ids).min(dim=dim, skipna=True)
-    else:
-        raise ValueError(f"Unknown reduction: {reduction}")
-
-    return result
+    return xr.apply_ufunc(
+        _decluster_runs_1d,
+        da,
+        exceedances,
+        input_core_dims=[[dim], [dim]],
+        output_core_dims=[[dim]],
+        vectorize=True,
+        output_dtypes=[float],
+    )
 
 
 def decluster_separation(
@@ -164,7 +193,7 @@ def estimate_extremal_index(
     threshold: float | xr.DataArray,
     dim: str = "time",
     method: str = "runs",
-) -> float:
+) -> float | xr.DataArray:
     """
     Estimate the extremal index (theta), a measure of clustering.
 
@@ -186,8 +215,10 @@ def estimate_extremal_index(
 
     Returns
     -------
-    float
-        Extremal index estimate (between 0 and 1)
+    float or xr.DataArray
+        Extremal index estimate (between 0 and 1). For 1-D input a scalar
+        ``float``. For inputs with additional dimensions, a DataArray of
+        per-slice estimates (one θ per batch row, e.g. per site).
 
     Examples
     --------
@@ -204,33 +235,36 @@ def estimate_extremal_index(
     Notes
     -----
     The runs estimator uses: θ = (number of clusters) / (number of exceedances)
-    A smaller θ indicates more clustering.
+    A smaller θ indicates more clustering. Counting is performed
+    independently per non-``dim`` slice so cluster labels from different
+    slices cannot collide.
     """
-    # Count total exceedances
-    exceedances = da > threshold
-    n_exceedances = int(exceedances.sum().values)
-
-    if n_exceedances == 0:
-        return np.nan
-
-    if method == "runs":
-        # Count number of runs (clusters)
-        run_boundaries = exceedances != exceedances.shift({dim: 1})
-        run_ids = run_boundaries.cumsum(dim=dim)
-        run_ids_masked = run_ids.where(exceedances)
-
-        # Number of unique runs
-        n_runs = len(np.unique(run_ids_masked.values[~np.isnan(run_ids_masked.values)]))
-
-        # Extremal index estimate
-        theta = n_runs / n_exceedances
-
-        return theta
-
-    elif method == "intervals":
-        # Intervals estimator (more sophisticated, placeholder)
-        # Would need inter-exceedance times distribution
+    if method == "intervals":
         raise NotImplementedError("Intervals method not yet implemented")
-
-    else:
+    if method != "runs":
         raise ValueError(f"Unknown method: {method}")
+
+    exceedances = da > threshold
+
+    def _theta_runs_1d(exc: np.ndarray) -> float:
+        n_exc = int(exc.sum())
+        if n_exc == 0:
+            return np.nan
+        # Count contiguous runs of True along the 1-D slice.
+        # A run starts at index i iff exc[i] and (i == 0 or not exc[i-1]).
+        starts = exc & np.concatenate(([True], ~exc[:-1]))
+        n_runs = int(starts.sum())
+        return n_runs / n_exc
+
+    theta = xr.apply_ufunc(
+        _theta_runs_1d,
+        exceedances,
+        input_core_dims=[[dim]],
+        output_core_dims=[[]],
+        vectorize=True,
+        output_dtypes=[float],
+    )
+    # Preserve the historical 1-D scalar return type.
+    if theta.ndim == 0:
+        return float(theta.values)
+    return theta

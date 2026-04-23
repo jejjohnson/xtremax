@@ -10,6 +10,7 @@ from xtremax.simulations import (
     generate_fractal_terrain,
     generate_gmst_trajectory,
     generate_iberia_mask,
+    generate_physical_gmst,
     generate_spatial_field,
     simulate_precip_extremes,
     simulate_temp_extremes,
@@ -27,6 +28,16 @@ class TestTemporal:
         assert da.dims == ("year",)
         assert da.sizes["year"] == n_years
         assert np.all(np.isfinite(da.values))
+
+    @pytest.mark.parametrize("n_years", [5, 9])
+    def test_physical_gmst_short_runs(self, n_years):
+        """Regression: `rng.uniform(5, n_years - 5, ...)` raised ValueError
+        for n_years < 10 because `high < low`. Short runs must now return
+        a valid dataset with an empty eruption schedule.
+        """
+        ds = generate_physical_gmst(n_years=n_years, seed=0)
+        assert "gmst" in ds.data_vars
+        assert np.all(np.isfinite(ds["gmst"].values))
 
 
 class TestSpatial:

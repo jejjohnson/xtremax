@@ -148,8 +148,16 @@ def generate_physical_gmst(
     # C. Volcanic Eruptions (Stochastic Spikes)
     #    modeled as discrete negative impulses decaying exponentially
     n_eruptions = int(n_years / 10)  # Approx 1 per decade
-    eruption_times = np.sort(rng.uniform(5, n_years - 5, n_eruptions))
-    eruption_magnitudes = rng.gamma(shape=2.0, scale=1.5, size=n_eruptions)  # W/m2
+    # Reserve a 5-year buffer at both ends; if the run is shorter than that
+    # window (or n_eruptions < 1) fall back to an empty schedule. Without
+    # this guard `rng.uniform(5, n_years - 5, ...)` raises ValueError for
+    # `n_years < 10` since `high < low`.
+    if n_eruptions >= 1 and n_years >= 10:
+        eruption_times = np.sort(rng.uniform(5, n_years - 5, n_eruptions))
+        eruption_magnitudes = rng.gamma(shape=2.0, scale=1.5, size=n_eruptions)  # W/m2
+    else:
+        eruption_times = np.empty(0, dtype=float)
+        eruption_magnitudes = np.empty(0, dtype=float)
 
     def forcing_volcano(t):
         val = 0.0
@@ -243,8 +251,11 @@ def generate_physical_gmst(
         },
     )
 
-    # Downsample to annual means (optional, but requested format usually annual)
-    ds_annual = ds.groupby(np.floor(ds.time)).mean()
-    ds_annual = ds_annual.rename({"floor": "year"})
+    # Downsample to annual means (monthly output grouped by integer year).
+    # Build an explicit integer year coordinate so the resulting group
+    # dimension is named "year" regardless of xarray's groupby-anonymous
+    # naming behaviour.
+    year_coord = np.floor(ds["time"].values).astype(int)
+    ds_annual = ds.assign_coords(year=("time", year_coord)).groupby("year").mean()
 
     return ds_annual

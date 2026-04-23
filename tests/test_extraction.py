@@ -12,6 +12,7 @@ from xtremax.extraction import (
     decluster_runs,
     decluster_separation,
     declustered_block_maxima,
+    estimate_extremal_index,
     quantile_threshold,
     r_largest_block_maxima,
     rolling_threshold,
@@ -136,6 +137,114 @@ class TestDecluster:
         site1_vals = out.sel(site=1).dropna("time").values.tolist()
         assert set(site0_vals) == {5.0, 3.0}  # both kept (15 apart)
         assert set(site1_vals) == {4.0}  # only the larger (too close)
+
+    def test_runs_isolates_per_slice(self):
+        """Regression: grouping by a flat run_ids DataArray pooled clusters
+        across non-``dim`` slices because IDs restart per slice, so e.g. a
+        ``time × site`` input with run id 1 on both sites would merge them
+        into one group. Per-slice 1-D processing via apply_ufunc fixes this.
+        """
+        # Build two sites, each with one exceedance run, at different times.
+        # Site 0: values [0,0,3,4,0,0,0,0]  -> one run with max=4
+        # Site 1: values [0,0,0,0,0,5,6,0]  -> one run with max=6
+        time = pd.date_range("2020-01-01", periods=8, freq="D")
+        values = np.zeros((8, 2), dtype=float)
+        values[2, 0], values[3, 0] = 3.0, 4.0
+        values[5, 1], values[6, 1] = 5.0, 6.0
+        da = xr.DataArray(
+            values,
+            dims=("time", "site"),
+            coords={"time": time, "site": [0, 1]},
+        )
+
+        out = decluster_runs(da, threshold=0.5, reduction="max")
+
+        # Output preserves shape; each site gets its own run representative.
+        assert out.sizes == da.sizes
+        site0_vals = out.sel(site=0).dropna("time").values.tolist()
+        site1_vals = out.sel(site=1).dropna("time").values.tolist()
+        assert site0_vals == [4.0]
+        assert site1_vals == [6.0]
+
+    def test_runs_matches_per_slice_loop(self):
+        """Per-slice output must equal calling decluster_runs on each slice."""
+        rng = np.random.default_rng(0)
+        time = pd.date_range("2020-01-01", periods=50, freq="D")
+        values = rng.standard_normal((50, 3))
+        da = xr.DataArray(
+            values,
+            dims=("time", "site"),
+            coords={"time": time, "site": [0, 1, 2]},
+        )
+
+        vectorised = decluster_runs(da, threshold=0.5, reduction="max")
+        for s in [0, 1, 2]:
+            per_site = decluster_runs(da.sel(site=s), threshold=0.5, reduction="max")
+            np.testing.assert_array_equal(
+                vectorised.sel(site=s).values, per_site.values
+            )
+
+    def test_extremal_index_returns_one_per_slice(self):
+        """Regression: counting unique run_ids across all dims merged
+        independent clusters from different slices (both restart at 1).
+        The per-slice estimator returns one θ per batch row instead.
+        """
+        # Site 0: two isolated exceedances (2 runs of 1 → θ = 1.0).
+        # Site 1: one run of length 2 (1 run / 2 exceedances → θ = 0.5).
+        time = pd.date_range("2020-01-01", periods=8, freq="D")
+        values = np.zeros((8, 2), dtype=float)
+        values[1, 0] = 3.0
+        values[4, 0] = 3.0
+        values[2, 1] = 3.0
+        values[3, 1] = 3.0
+        da = xr.DataArray(
+            values,
+            dims=("time", "site"),
+            coords={"time": time, "site": [0, 1]},
+        )
+
+        theta = estimate_extremal_index(da, threshold=0.5)
+
+        assert isinstance(theta, xr.DataArray)
+        assert set(theta.dims) == {"site"}
+        assert float(theta.sel(site=0)) == pytest.approx(1.0)
+        assert float(theta.sel(site=1)) == pytest.approx(0.5)
+
+    def test_extremal_index_scalar_for_1d(self):
+        """1-D inputs keep the historical float return type."""
+        values = np.zeros(8, dtype=float)
+        values[2] = 3.0  # one isolated run
+        values[5] = 3.0  # another isolated run
+        time = pd.date_range("2020-01-01", periods=8, freq="D")
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+
+        theta = estimate_extremal_index(da, threshold=0.5)
+        assert isinstance(theta, float)
+        assert theta == pytest.approx(1.0)
+
+    def test_declustered_block_maxima_runs_isolates_per_slice(self):
+        """Regression: the runs branch of declustered_block_maxima used to
+        call groupby on numeric run_ids that restart per slice, mixing
+        clusters across sites. It now delegates to decluster_runs.
+        """
+        time = pd.date_range("2020-01-01", periods=8, freq="D")
+        values = np.zeros((8, 2), dtype=float)
+        values[2, 0], values[3, 0] = 3.0, 4.0
+        values[5, 1], values[6, 1] = 5.0, 6.0
+        da = xr.DataArray(
+            values,
+            dims=("time", "site"),
+            coords={"time": time, "site": [0, 1]},
+        )
+
+        out = declustered_block_maxima(
+            da, threshold=0.5, min_separation=1, method="runs"
+        )
+
+        site0_vals = out.sel(site=0).dropna("time").values.tolist()
+        site1_vals = out.sel(site=1).dropna("time").values.tolist()
+        assert site0_vals == [4.0]
+        assert site1_vals == [6.0]
 
     def test_declustered_block_maxima_separation_applies_min_separation(self):
         """Regression: the `method='separation'` branch of

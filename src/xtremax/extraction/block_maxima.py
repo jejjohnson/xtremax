@@ -241,25 +241,17 @@ def declustered_block_maxima(
     the maximum from each run. The separation method ensures peaks are
     separated by at least min_separation time steps.
     """
-    # Identify exceedances
-    exceedances = da > threshold
+    from xtremax.extraction.decluster import decluster_runs, decluster_separation
 
     if method == "runs":
-        # Label contiguous runs above threshold
-        # Note: This is a simplified version - full implementation would use
-        # scipy.ndimage.label or similar for multi-dimensional arrays
-        runs = (exceedances != exceedances.shift({dim: 1})).cumsum(dim=dim)
-        runs = runs.where(exceedances)
-
-        # Get maximum value from each run
-        maxima = da.groupby(runs).max(dim=dim, skipna=True)
-        return maxima
+        # Delegate so run IDs are computed per non-`dim` slice and cannot
+        # collide across batch rows (e.g. different sites).
+        reduced = decluster_runs(da, threshold=threshold, dim=dim, reduction="max")
+        return reduced.dropna(dim, how="all")
 
     elif method == "separation":
         # Delegate to the separation-based declustering helper, which
         # actually applies `min_separation` in units of original time steps.
-        from xtremax.extraction.decluster import decluster_separation
-
         return decluster_separation(
             da, threshold=threshold, min_separation=min_separation, dim=dim
         )
