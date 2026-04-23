@@ -145,8 +145,20 @@ def decluster_separation(
     then iteratively removes peaks that are too close to larger peaks.
     """
     # Identify local maxima above threshold.
+    #
+    # `da.shift` fills the edge with NaN, so comparisons at the first /
+    # last positions along `dim` silently evaluate to False. Previously
+    # this meant boundary elements could NEVER be marked as peaks — a
+    # silent event drop for short windows or chunked workflows. Treat a
+    # missing neighbour as "no constraint from that side": a boundary
+    # position is a peak if it is strictly greater than its single
+    # existing neighbour (and above threshold).
     exceedances = da > threshold
-    is_peak = (da > da.shift({dim: 1})) & (da > da.shift({dim: -1})) & exceedances
+    left = da.shift({dim: 1})
+    right = da.shift({dim: -1})
+    left_ok = left.isnull() | (da > left)
+    right_ok = right.isnull() | (da > right)
+    is_peak = left_ok & right_ok & exceedances
 
     def _select_separated_peaks_1d(
         values: np.ndarray, peak_mask: np.ndarray

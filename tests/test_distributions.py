@@ -421,6 +421,24 @@ class TestWeibull:
         r = d.percentile_residual_life(jnp.array(-1.0), percentile=0.0)
         assert jnp.allclose(r, 0.0, atol=1e-5)
 
+    def test_moments_finite_across_full_valid_shape_range(self):
+        """Regression: variance/skew/kurtosis used guards ``ξ > -1/2``,
+        ``ξ > -1/3``, ``ξ > -1/4`` inherited from the Fréchet moment
+        existence conditions reflected to negative ξ. Weibull Type III
+        has ξ<0 (bounded support), so ALL moments are finite for every
+        valid ξ. The guards silently returned NaN for e.g. ξ = -1.
+        """
+        for xi in [-0.1, -0.5, -0.7, -1.0, -2.0]:
+            d = WeibullType3GEVD(loc=0.0, scale=1.0, shape=xi)
+            v = float(d.variance)
+            s = float(d.skew())
+            k = float(d.kurtosis())
+            assert jnp.isfinite(v), f"variance NaN at ξ={xi}"
+            assert jnp.isfinite(s), f"skew NaN at ξ={xi}"
+            assert jnp.isfinite(k), f"kurtosis NaN at ξ={xi}"
+            # Sanity: variance must be positive.
+            assert v > 0.0
+
     def test_mean_excess_decays_to_zero_near_upper_bound(self):
         """Regression: Weibull mean excess used the GPD linear POT form,
         which does NOT vanish as the threshold approaches the finite

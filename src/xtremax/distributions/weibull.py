@@ -228,83 +228,69 @@ class WeibullType3GEVD(dist.Distribution):
         """
         Compute the variance of the Weibull Type III GEVD.
 
-        The variance exists when ξ > -1/2:
         Var[X] = (σ²/ξ²) * (Γ(1-2ξ) - Γ²(1-ξ))
 
+        For Weibull Type III, ξ < 0 means the distribution is bounded
+        above, so *all* moments exist for every valid ξ in the Type III
+        range (no guard is needed). The earlier guard ``ξ > -1/2`` was
+        mistakenly inherited from the Fréchet moment-existence condition
+        reflected to negative ξ; it silently returned NaN for valid
+        shapes like ξ = -1.
+
         Returns:
-            Variance or NaN when it doesn't exist (ξ ≤ -1/2)
+            Variance (always finite on the Type III domain).
         """
         _loc, scale, shape = self.loc, self.scale, self.shape
 
-        # Variance exists for ξ > -1/2
-        var_exists = shape > -0.5
-
-        # Compute variance using gamma functions
+        # Γ(1 - 2ξ) and Γ(1 - ξ) are finite for every ξ < 0 (argument > 1).
         gamma1 = jnp.exp(gammaln(1.0 - 2.0 * shape))  # Γ(1-2ξ)
         gamma2 = jnp.exp(2.0 * gammaln(1.0 - shape))  # Γ²(1-ξ)
-
-        var_val = (scale**2 / shape**2) * (gamma1 - gamma2)
-
-        return jnp.where(var_exists, var_val, jnp.nan)
+        return (scale**2 / shape**2) * (gamma1 - gamma2)
 
     def kurtosis(self) -> jnp.ndarray:
         """
         Compute the excess kurtosis of the Weibull Type III GEVD.
 
-        Excess kurtosis exists when ξ > -1/4 and involves fourth-order moments:
         κ = μ₄/σ⁴ - 3
 
+        As with variance, every moment exists for every ξ < 0 (bounded
+        support), so no ``ξ > -1/4`` guard is applied.
+
         Returns:
-            Excess kurtosis or NaN when it doesn't exist (ξ ≤ -1/4)
+            Excess kurtosis (always finite on the Type III domain).
         """
         shape = self.shape
 
-        # Kurtosis exists for ξ > -1/4
-        kurt_exists = shape > -0.25
-
-        # Complex formula involving gamma functions for fourth moment
         g1 = jnp.exp(gammaln(1.0 - shape))  # Γ(1-ξ)
         g2 = jnp.exp(gammaln(1.0 - 2.0 * shape))  # Γ(1-2ξ)
         g3 = jnp.exp(gammaln(1.0 - 3.0 * shape))  # Γ(1-3ξ)
         g4 = jnp.exp(gammaln(1.0 - 4.0 * shape))  # Γ(1-4ξ)
 
-        # Central moments
         mu2 = g2 - g1**2
         mu4 = g4 - 4.0 * g1 * g3 + 6.0 * g1**2 * g2 - 3.0 * g1**4
-
-        excess_kurt = (mu4 / mu2**2) - 3.0
-
-        return jnp.where(kurt_exists, excess_kurt, jnp.nan)
+        return (mu4 / mu2**2) - 3.0
 
     def skew(self) -> jnp.ndarray:
         """
         Compute the skewness of the Weibull Type III GEVD.
 
-        Skewness exists when ξ > -1/3 and involves third-order moments.
-
         For Weibull Type III, skewness is typically negative due to the
-        upper bound creating left-skewed distributions.
+        upper bound creating left-skewed distributions. All moments
+        exist across the full valid ξ < 0 range.
 
         Returns:
-            Skewness or NaN when it doesn't exist (ξ ≤ -1/3)
+            Skewness (always finite on the Type III domain).
         """
         shape = self.shape
 
-        # Skewness exists for ξ > -1/3
-        skew_exists = shape > -1.0 / 3.0
-
-        # Compute using gamma functions
         g1 = jnp.exp(gammaln(1.0 - shape))  # Γ(1-ξ)
         g2 = jnp.exp(gammaln(1.0 - 2.0 * shape))  # Γ(1-2ξ)
         g3 = jnp.exp(gammaln(1.0 - 3.0 * shape))  # Γ(1-3ξ)
 
-        # Central moments
         mu2 = g2 - g1**2
         mu3 = g3 - 3.0 * g1 * g2 + 2.0 * g1**3
 
-        skewness = mu3 / jnp.power(mu2, 1.5)
-
-        return jnp.where(skew_exists, skewness, jnp.nan)
+        return mu3 / jnp.power(mu2, 1.5)
 
     def entropy(self) -> jnp.ndarray:
         """

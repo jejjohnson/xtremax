@@ -185,6 +185,25 @@ class TestDecluster:
         assert out.sizes["time"] == 1
         assert float(out.values[0]) == 4.0
 
+    def test_separation_keeps_boundary_peaks(self):
+        """Regression: `is_peak` required both a left AND a right neighbour,
+        so the first and last positions along `dim` could never be peaks
+        (one neighbour was always NaN after shifting). In short windows
+        or chunked workflows this silently dropped valid boundary events.
+        """
+        # First and last positions are exceedances with a single
+        # strictly-lower existing neighbour; they must now count as peaks.
+        values = np.array([5.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 4.0])
+        time = pd.date_range("2020-01-01", periods=len(values), freq="D")
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+
+        out = decluster_separation(da, threshold=0.5, min_separation=3)
+
+        # Both boundary peaks (positions 0 and -1) must be retained —
+        # they're 7 steps apart, well above min_separation=3.
+        assert out.sizes["time"] == 2
+        assert set(float(v) for v in out.values) == {5.0, 4.0}
+
     def test_separation_vectorises_over_extra_dims(self):
         """Regression: `np.flatnonzero(is_peak.values)` used linear indices
         across all dims, so for multi-D arrays positions didn't correspond
