@@ -22,7 +22,9 @@ def key():
 
 class TestGEVD:
     def test_log_prob_and_sample_shape(self, key):
-        dist = GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, shape=0.1)
+        dist = GeneralizedExtremeValueDistribution(
+            loc=0.0, scale=1.0, concentration=0.1
+        )
         samples = dist.sample(key, sample_shape=(32,))
         assert samples.shape == (32,)
         lp = dist.log_prob(samples)
@@ -30,14 +32,18 @@ class TestGEVD:
         assert jnp.all(jnp.isfinite(lp))
 
     def test_cdf_icdf_round_trip(self):
-        dist = GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, shape=0.2)
+        dist = GeneralizedExtremeValueDistribution(
+            loc=0.0, scale=1.0, concentration=0.2
+        )
         q = jnp.array([0.1, 0.25, 0.5, 0.75, 0.9])
         x = dist.icdf(q)
         q_round = dist.cdf(x)
         assert jnp.allclose(q, q_round, atol=1e-4)
 
     def test_small_negative_shape(self, key):
-        dist = GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, shape=-0.2)
+        dist = GeneralizedExtremeValueDistribution(
+            loc=0.0, scale=1.0, concentration=-0.2
+        )
         samples = dist.sample(key, sample_shape=(16,))
         lp = dist.log_prob(samples)
         assert jnp.all(jnp.isfinite(lp))
@@ -117,7 +123,9 @@ class TestGEVD:
         Verify by grid-search argmax of the pdf for a few shapes.
         """
         for shape in [-0.3, -0.1, 0.1, 0.3]:
-            d = GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, shape=shape)
+            d = GeneralizedExtremeValueDistribution(
+                loc=0.0, scale=1.0, concentration=shape
+            )
             # Grid covers a wide range relative to the typical mode of
             # σ·((1+ξ)^(-ξ) - 1)/ξ (a fraction of σ around μ).
             grid = jnp.linspace(-5.0, 5.0, 20001)
@@ -134,7 +142,9 @@ class TestGEVD:
         not at the interior stationary-point formula.
         """
         for shape in [-1.0, -1.2, -2.0]:
-            d = GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, shape=shape)
+            d = GeneralizedExtremeValueDistribution(
+                loc=0.0, scale=1.0, concentration=shape
+            )
             assert jnp.allclose(d.mode, d.upper_bound(), atol=1e-6)
 
     def test_log_survival_stays_finite_in_gumbel_far_tail(self):
@@ -162,7 +172,7 @@ class TestGEVD:
 
 class TestGPD:
     def test_log_prob_and_sample_shape(self, key):
-        dist = GeneralizedParetoDistribution(scale=1.0, shape=0.2)
+        dist = GeneralizedParetoDistribution(scale=1.0, concentration=0.2)
         samples = dist.sample(key, sample_shape=(32,))
         assert samples.shape == (32,)
         lp = dist.log_prob(samples)
@@ -205,7 +215,7 @@ class TestGPD:
         rejected by the support constraint (so `validate_args=True` does
         its job instead of deferring to log_prob → -∞).
         """
-        d = GeneralizedParetoDistribution(scale=1.0, shape=-0.5)
+        d = GeneralizedParetoDistribution(scale=1.0, concentration=-0.5)
         upper = float(d.upper_bound())  # = 2.0
         # Within support
         assert bool(d.support(jnp.array(1.0)))
@@ -218,7 +228,7 @@ class TestGPD:
         """For ξ ≥ 0 the support is [0, +∞), so any nonnegative x must
         be accepted (no upper-bound leakage from the constraint change).
         """
-        d = GeneralizedParetoDistribution(scale=1.0, shape=0.2)
+        d = GeneralizedParetoDistribution(scale=1.0, concentration=0.2)
         assert bool(d.support(jnp.array(0.5)))
         assert bool(d.support(jnp.array(1e6)))
         assert not bool(d.support(jnp.array(-0.1)))
@@ -231,7 +241,7 @@ class TestGPD:
         and every cdf/skew/kurtosis call raised AttributeError. Rebuilding
         via ``__init__`` restores all cached state.
         """
-        d = GeneralizedParetoDistribution(scale=1.0, shape=0.2)
+        d = GeneralizedParetoDistribution(scale=1.0, concentration=0.2)
         expanded = d.expand((3,))
         assert expanded.batch_shape == (3,)
         assert hasattr(expanded, "_exponential_threshold")
@@ -245,14 +255,14 @@ class TestGPD:
         so for `x < 0` (outside GPD support where f=0, S=1, h=0) it returned
         positive hazards instead of zero.
         """
-        d = GeneralizedParetoDistribution(scale=1.5, shape=0.2)
+        d = GeneralizedParetoDistribution(scale=1.5, concentration=0.2)
         x_below = jnp.array([-5.0, -1.0, -0.01])
         h = d.hazard_rate(x_below)
         assert jnp.all(h == 0.0)
 
     def test_hazard_rate_matches_pdf_over_survival_on_support(self):
         """Within the support hazard must equal f/S."""
-        d = GeneralizedParetoDistribution(scale=1.5, shape=0.2)
+        d = GeneralizedParetoDistribution(scale=1.5, concentration=0.2)
         x = jnp.array([0.0, 0.5, 1.0, 2.0, 5.0])
         pdf = jnp.exp(d.log_prob(x))
         surv = d.survival_function(x)
@@ -266,7 +276,7 @@ class TestGPD:
         the buggy version used `shape` as both the scale and shape, giving
         a wildly different value. Verify against 1 - cdf().
         """
-        d = GeneralizedParetoDistribution(scale=2.0, shape=0.3)
+        d = GeneralizedParetoDistribution(scale=2.0, concentration=0.3)
         x = jnp.array([0.5, 1.0, 2.0, 5.0])
         assert jnp.allclose(d.survival_function(x), 1.0 - d.cdf(x), atol=1e-6)
 
@@ -274,7 +284,7 @@ class TestGPD:
         """Regression: `1 - cdf` cancelled to zero in the far tail even when
         the true survival probability was still representable.
         """
-        d = GeneralizedParetoDistribution(scale=1.0, shape=0.2)
+        d = GeneralizedParetoDistribution(scale=1.0, concentration=0.2)
         x = jnp.array(1000.0)
         survival = d.survival_function(x)
         cumulative_hazard = d.cumulative_hazard_rate(x)
@@ -427,7 +437,7 @@ class TestGumbel:
 
 class TestFrechet:
     def test_log_prob_and_sample_shape(self, key):
-        dist = FrechetType2GEVD(loc=0.0, scale=1.0, shape=0.2)
+        dist = FrechetType2GEVD(loc=0.0, scale=1.0, concentration=0.2)
         samples = dist.sample(key, sample_shape=(32,))
         assert samples.shape == (32,)
         lp = dist.log_prob(samples)
@@ -435,7 +445,7 @@ class TestFrechet:
 
     def test_log_survival_matches_log_of_survival(self):
         """Regression: log_survival previously returned log F(x), not log S(x)."""
-        d = FrechetType2GEVD(loc=0.0, scale=1.0, shape=0.2)
+        d = FrechetType2GEVD(loc=0.0, scale=1.0, concentration=0.2)
         x = jnp.linspace(1.5, 10.0, 10)
         log_s = d.log_survival_function(x)
         expected = jnp.log(1.0 - d.cdf(x))
@@ -446,7 +456,7 @@ class TestFrechet:
         stationary point is `(1+ξ)^(-ξ)`. Verify by grid argmax of the pdf.
         """
         for shape in [0.1, 0.3, 0.5]:
-            d = FrechetType2GEVD(loc=0.0, scale=1.0, shape=shape)
+            d = FrechetType2GEVD(loc=0.0, scale=1.0, concentration=shape)
             # Support is x > μ - σ/ξ; for μ=0,σ=1 this is x > -1/ξ.
             # The mode sits slightly below 0 for small ξ, slightly above
             # for larger ξ, so scan a wide window inside the support.
@@ -471,7 +481,7 @@ class TestFrechet:
 
         @jax.jit
         def make_and_logprob(shape):
-            d = FrechetType2GEVD(loc=0.0, scale=1.0, shape=shape)
+            d = FrechetType2GEVD(loc=0.0, scale=1.0, concentration=shape)
             return d.log_prob(jnp.array(1.0))
 
         result = make_and_logprob(jnp.array(0.3))
@@ -482,7 +492,7 @@ class TestFrechet:
         correct GEV-branch entropy is `log σ + 1 + γ(1 + ξ)`.
         """
         scale, shape = 1.7, 0.25
-        d = FrechetType2GEVD(loc=0.0, scale=scale, shape=shape)
+        d = FrechetType2GEVD(loc=0.0, scale=scale, concentration=shape)
         euler_gamma = 0.5772156649015329
         expected = float(jnp.log(scale) + 1.0 + euler_gamma * (1.0 + shape))
         assert jnp.allclose(d.entropy(), expected, atol=1e-6)
@@ -493,7 +503,7 @@ class TestFrechet:
         now returns threshold-dependent values that grow sub-linearly with
         u in the heavy-tail regime (ξ > 0).
         """
-        d = FrechetType2GEVD(loc=0.0, scale=1.0, shape=0.3)
+        d = FrechetType2GEVD(loc=0.0, scale=1.0, concentration=0.3)
         thresholds = jnp.array([0.0, 1.0, 2.0, 5.0])
         me = d.conditional_excess_mean(thresholds)
         # Monotonically increasing with threshold (heavier tail).
@@ -503,13 +513,13 @@ class TestFrechet:
 
     def test_support_accepts_lower_endpoint(self):
         """Fréchet support is closed at the lower endpoint x = μ - σ/ξ."""
-        d = FrechetType2GEVD(loc=0.0, scale=1.0, shape=0.2)
+        d = FrechetType2GEVD(loc=0.0, scale=1.0, concentration=0.2)
         assert bool(d.support(d.lower_bound()))
 
 
 class TestWeibull:
     def test_log_prob_and_sample_shape(self, key):
-        dist = WeibullType3GEVD(loc=0.0, scale=1.0, shape=-0.2)
+        dist = WeibullType3GEVD(loc=0.0, scale=1.0, concentration=-0.2)
         samples = dist.sample(key, sample_shape=(32,))
         assert samples.shape == (32,)
         lp = dist.log_prob(samples)
@@ -530,7 +540,7 @@ class TestWeibull:
 
         @jax.jit
         def make_and_logprob(shape):
-            d = WeibullType3GEVD(loc=0.0, scale=1.0, shape=shape)
+            d = WeibullType3GEVD(loc=0.0, scale=1.0, concentration=shape)
             return d.log_prob(jnp.array(-1.0))
 
         result = make_and_logprob(jnp.array(-0.3))
@@ -544,7 +554,7 @@ class TestWeibull:
         valid ξ. The guards silently returned NaN for e.g. ξ = -1.
         """
         for xi in [-0.1, -0.5, -0.7, -1.0, -2.0]:
-            d = WeibullType3GEVD(loc=0.0, scale=1.0, shape=xi)
+            d = WeibullType3GEVD(loc=0.0, scale=1.0, concentration=xi)
             v = float(d.variance)
             s = float(d.skew())
             k = float(d.kurtosis())
@@ -561,7 +571,7 @@ class TestWeibull:
         returns values tending to zero as u → upper bound (and NaN once
         F(u) ≥ 1 - 1e-6, beyond the quadrature's float32 reach).
         """
-        d = WeibullType3GEVD(loc=0.0, scale=1.0, shape=-0.3)
+        d = WeibullType3GEVD(loc=0.0, scale=1.0, concentration=-0.3)
         ub = float(d.upper_bound())
         thresholds = jnp.array([ub * 0.3, ub * 0.6, ub * 0.9, ub * 0.95])
         me = d.conditional_excess_mean(thresholds)
@@ -578,7 +588,7 @@ class TestWeibull:
         it must also reduce to the Gumbel entropy `log σ + 1 + γ`.
         """
         scale, xi = 1.7, -0.25
-        d = WeibullType3GEVD(loc=0.0, scale=scale, shape=xi)
+        d = WeibullType3GEVD(loc=0.0, scale=scale, concentration=xi)
         euler_gamma = 0.5772156649015329
         expected = float(jnp.log(scale) + 1.0 + euler_gamma * (1.0 + xi))
         assert jnp.allclose(d.entropy(), expected, atol=1e-6)
@@ -587,7 +597,7 @@ class TestWeibull:
         """Weibull entropy at ξ→0⁻ must match the Gumbel formula."""
         scale = 1.7
         euler_gamma = 0.5772156649015329
-        d_tiny = WeibullType3GEVD(loc=0.0, scale=scale, shape=-1e-8)
+        d_tiny = WeibullType3GEVD(loc=0.0, scale=scale, concentration=-1e-8)
         expected_gumbel = float(jnp.log(scale) + 1.0 + euler_gamma)
         assert jnp.allclose(d_tiny.entropy(), expected_gumbel, atol=1e-5)
 
@@ -596,7 +606,7 @@ class TestWeibull:
         GEV-parameterisation stationary point is `(1+ξ)^(-ξ)`.
         """
         for shape in [-0.3, -0.2, -0.1]:
-            d = WeibullType3GEVD(loc=0.0, scale=1.0, shape=shape)
+            d = WeibullType3GEVD(loc=0.0, scale=1.0, concentration=shape)
             # Support has upper bound μ - σ/ξ = 1/|ξ|; scan below it.
             upper = -1.0 / shape
             grid = jnp.linspace(upper - 10.0, upper - 1e-4, 20001)
@@ -611,12 +621,12 @@ class TestWeibull:
     def test_mode_equals_upper_bound_when_shape_le_minus_one(self):
         """For ξ ≤ -1 the reverse-Weibull density peaks at the upper endpoint."""
         for shape in [-1.0, -1.2, -2.0]:
-            d = WeibullType3GEVD(loc=0.0, scale=1.0, shape=shape)
+            d = WeibullType3GEVD(loc=0.0, scale=1.0, concentration=shape)
             assert jnp.allclose(d.mode, d.upper_bound(), atol=1e-6)
 
     def test_support_accepts_upper_endpoint(self):
         """Weibull support is closed at the upper endpoint x = μ - σ/ξ."""
-        d = WeibullType3GEVD(loc=0.0, scale=1.0, shape=-0.2)
+        d = WeibullType3GEVD(loc=0.0, scale=1.0, concentration=-0.2)
         assert bool(d.support(d.upper_bound()))
 
 
@@ -665,10 +675,10 @@ class TestPRNGKeyValidation:
             GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, concentration=0.0),
             GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, concentration=0.2),
             GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, concentration=-0.2),
-            GeneralizedParetoDistribution(scale=1.0, shape=0.2),
-            GeneralizedParetoDistribution(scale=1.0, shape=-0.2),
-            FrechetType2GEVD(loc=0.0, scale=1.0, shape=0.3),
-            WeibullType3GEVD(loc=0.0, scale=1.0, shape=-0.3),
+            GeneralizedParetoDistribution(scale=1.0, concentration=0.2),
+            GeneralizedParetoDistribution(scale=1.0, concentration=-0.2),
+            FrechetType2GEVD(loc=0.0, scale=1.0, concentration=0.3),
+            WeibullType3GEVD(loc=0.0, scale=1.0, concentration=-0.3),
         ]
         for d in dists:
             samples = d.sample(key, sample_shape=(4096,))
@@ -684,3 +694,100 @@ class TestPRNGKeyValidation:
         not_a_key = jnp.array([1, 2, 3, 4, 5], dtype=jnp.uint32)
         with pytest.raises(TypeError, match="JAX PRNG key"):
             d.sample(not_a_key, sample_shape=(4,))
+
+
+class TestShapeParameterAlias:
+    """Regression: GEVD/GPD/Frechet/Weibull previously stored the tail-
+    index parameter on ``self.shape``, which shadowed NumPyro's
+    ``Distribution.shape()`` method. Tooling that calls
+    ``fn.shape(sample_shape)`` would hit a non-callable tensor. The
+    attribute is now ``self.concentration`` and ``shape=`` remains as a
+    deprecated constructor alias.
+    """
+
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            lambda: GeneralizedExtremeValueDistribution(
+                loc=0.0, scale=1.0, concentration=0.2
+            ),
+            lambda: GeneralizedParetoDistribution(scale=1.0, concentration=0.2),
+            lambda: FrechetType2GEVD(loc=0.0, scale=1.0, concentration=0.3),
+            lambda: WeibullType3GEVD(loc=0.0, scale=1.0, concentration=-0.3),
+        ],
+    )
+    def test_distribution_shape_method_is_callable(self, factory):
+        d = factory()
+        # shape() must be NumPyro's bound method, not a tensor.
+        assert callable(d.shape), (
+            f"{type(d).__name__}.shape shadowed by parameter tensor"
+        )
+        # And returns a tuple for the given sample_shape.
+        assert d.shape((3,)) == (3, *d.batch_shape, *d.event_shape)
+
+    @pytest.mark.parametrize(
+        "cls,kwargs",
+        [
+            (GeneralizedParetoDistribution, {"scale": 1.0}),
+            (FrechetType2GEVD, {"loc": 0.0, "scale": 1.0}),
+            (WeibullType3GEVD, {"loc": 0.0, "scale": 1.0}),
+        ],
+    )
+    def test_shape_kwarg_emits_deprecation_and_still_works(self, cls, kwargs):
+        xi = -0.3 if cls is WeibullType3GEVD else 0.2
+        with pytest.warns(DeprecationWarning, match="'shape' is deprecated"):
+            d = cls(**kwargs, shape=xi)
+        assert jnp.allclose(d.concentration, jnp.asarray(xi))
+
+    @pytest.mark.parametrize(
+        "cls,kwargs",
+        [
+            (GeneralizedParetoDistribution, {"scale": 1.0}),
+            (FrechetType2GEVD, {"loc": 0.0, "scale": 1.0}),
+            (WeibullType3GEVD, {"loc": 0.0, "scale": 1.0}),
+        ],
+    )
+    def test_passing_both_concentration_and_shape_raises(self, cls, kwargs):
+        with pytest.raises(ValueError, match="Pass only one"):
+            cls(**kwargs, concentration=0.2, shape=0.2)
+
+
+class TestMeanExcessFarTailMonotonicGrid:
+    """Regression: the log-tail quadrature used a fixed lower bound
+    ``log(1e-6)`` and interpolated up to ``log S(u)``. When
+    ``S(u) < 1e-6`` (far-out threshold) the grid ran backward —
+    ``jnp.trapezoid(..., x=v_grid)`` then integrated with negative ``dx``
+    and returned a sign-flipped / negative conditional-excess mean.
+    The lower endpoint is now widened to ``log_s_u - 20`` in that
+    regime so ``v_grid`` stays strictly ascending.
+    """
+
+    def test_gevd_mean_excess_stays_non_negative_far_out(self):
+        # Fréchet branch (ξ=0.7): ME grows in u, but must never go
+        # negative just because S(u) is tiny. At u=500 with σ=1,
+        # S(u) ≈ 5e-4 ** (1/0.7) ≈ 1e-5 (below 1e-6 in float32).
+        d = GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, concentration=0.7)
+        for u in [100.0, 500.0, 1000.0]:
+            me = float(d.conditional_excess_mean(jnp.array(u)))
+            assert jnp.isfinite(me), f"ME non-finite at u={u}: {me}"
+            assert me > 0.0, f"ME sign-flipped at u={u}: {me}"
+
+    def test_frechet_mean_excess_stays_non_negative_far_out(self):
+        d = FrechetType2GEVD(loc=0.0, scale=1.0, concentration=0.5)
+        for u in [50.0, 500.0, 5000.0]:
+            me = float(d.conditional_excess_mean(jnp.array(u)))
+            assert jnp.isfinite(me), f"ME non-finite at u={u}: {me}"
+            assert me > 0.0, f"ME sign-flipped at u={u}: {me}"
+
+    def test_weibull_mean_excess_stays_non_negative_near_upper_endpoint(self):
+        # Weibull upper bound is μ - σ/ξ = 0 - 1/(-0.3) ≈ 3.333.
+        # Just below the endpoint, S(u) gets very small. We stay at
+        # fractions where S(u) > 1e-12 so the NaN mask doesn't fire;
+        # the bug symptom was a *negative* ME, not NaN.
+        d = WeibullType3GEVD(loc=0.0, scale=1.0, concentration=-0.3)
+        upper = float(d.upper_bound())
+        for frac in [0.9, 0.95, 0.99]:
+            u = frac * upper
+            me = float(d.conditional_excess_mean(jnp.array(u)))
+            assert jnp.isfinite(me), f"ME non-finite at u={u}: {me}"
+            assert me >= -1e-6, f"ME sign-flipped at u={u}: {me}"

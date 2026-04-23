@@ -8,9 +8,12 @@ value theory and peaks-over-threshold (POT) analysis.
 
 from __future__ import annotations
 
+import warnings
+
 import jax.numpy as jnp
 import numpyro.distributions as dist
 from jax import lax
+from jax.typing import ArrayLike
 from numpyro.distributions import constraints
 from numpyro.distributions.util import promote_shapes, validate_sample
 
@@ -107,30 +110,54 @@ class GeneralizedParetoDistribution(dist.Distribution):
     """
 
     # NumPyro distribution interface requirements
-    arg_constraints = {"scale": constraints.positive, "shape": constraints.real}
-    reparametrized_params = ["scale", "shape"]
+    arg_constraints = {"scale": constraints.positive, "concentration": constraints.real}
+    reparametrized_params = ["scale", "concentration"]
 
     def __init__(
-        self, scale: float = 1.0, shape: float = 0.0, validate_args: bool | None = None
+        self,
+        scale: ArrayLike = 1.0,
+        concentration: ArrayLike | None = None,
+        shape: ArrayLike | None = None,
+        validate_args: bool | None = None,
     ):
         """
         Initialize the Generalized Pareto Distribution.
 
         Args:
             scale: Scale parameter σ > 0
-            shape: Shape parameter ξ ∈ ℝ
+            concentration: Shape parameter ξ ∈ ℝ
                   * ξ > 0: Heavy tails (Pareto-type)
                   * ξ = 0: Exponential tails
                   * ξ < 0: Light tails, bounded support (Beta-type)
+            shape: Deprecated backward-compatible alias for ``concentration``.
+                Stored as ``self.concentration``; the NumPyro-inherited
+                ``Distribution.shape()`` method is kept callable.
             validate_args: Whether to validate input arguments
 
         Raises:
             ValueError: If scale <= 0
         """
-        self.scale, self.shape = promote_shapes(scale, shape)
+        if shape is not None:
+            if concentration is not None:
+                raise ValueError(
+                    "Pass only one of 'concentration' or the deprecated 'shape' alias."
+                )
+            warnings.warn(
+                "'shape' is deprecated; use 'concentration' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            concentration = shape
+
+        if concentration is None:
+            concentration = 0.0
+
+        self.scale, self.concentration = promote_shapes(scale, concentration)
 
         # Determine batch shape from broadcasted parameters
-        batch_shape = lax.broadcast_shapes(jnp.shape(self.scale), jnp.shape(self.shape))
+        batch_shape = lax.broadcast_shapes(
+            jnp.shape(self.scale), jnp.shape(self.concentration)
+        )
 
         # Numerical threshold for exponential approximation (ξ ≈ 0)
         self._exponential_threshold = 1e-8
@@ -172,15 +199,15 @@ class GeneralizedParetoDistribution(dist.Distribution):
     @validate_sample
     def log_prob(self, value: jnp.ndarray) -> jnp.ndarray:
         """Log PDF. Thin wrapper for :func:`~xtremax.primitives.gpd.gpd_log_prob`."""
-        return gpd_log_prob(value, self.scale, self.shape)
+        return gpd_log_prob(value, self.scale, self.concentration)
 
     def cdf(self, value: jnp.ndarray) -> jnp.ndarray:
         """CDF. Thin wrapper for :func:`~xtremax.primitives.gpd.gpd_cdf`."""
-        return gpd_cdf(value, self.scale, self.shape)
+        return gpd_cdf(value, self.scale, self.concentration)
 
     def icdf(self, q: jnp.ndarray) -> jnp.ndarray:
         """Quantile function. Thin wrapper for ``gpd_icdf``."""
-        return gpd_icdf(q, self.scale, self.shape)
+        return gpd_icdf(q, self.scale, self.concentration)
 
     @property
     def support(self) -> constraints.Constraint:
@@ -210,7 +237,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
             - ξ < 0: -σ/ξ
         """
         scale = jnp.asarray(self.scale)
-        shape = jnp.asarray(self.shape)
+        shape = jnp.asarray(self.concentration)
         # Replace ξ=0 with a safe placeholder inside the division so Python
         # scalars don't raise ZeroDivisionError before jnp.where selects
         # the +∞ branch.
@@ -229,7 +256,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
     @property
     def mean(self) -> jnp.ndarray:
         """Mean. Thin wrapper for :func:`~xtremax.primitives.gpd.gpd_mean`."""
-        return gpd_mean(self.scale, self.shape)
+        return gpd_mean(self.scale, self.concentration)
 
     @property
     def mode(self) -> jnp.ndarray:
@@ -260,7 +287,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Variance or +∞ when it doesn't exist
         """
-        scale, shape = self.scale, self.shape
+        scale, shape = self.scale, self.concentration
 
         # Variance exists for ξ < 1/2
         var_exists = shape < 0.5
@@ -282,7 +309,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Excess kurtosis or +∞ when it doesn't exist
         """
-        shape = self.shape
+        shape = self.concentration
 
         # Kurtosis exists for ξ < 1/4
         kurt_exists = shape < 0.25
@@ -311,7 +338,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Skewness or +∞ when it doesn't exist
         """
-        shape = self.shape
+        shape = self.concentration
 
         # Skewness exists for ξ < 1/3
         skew_exists = shape < 1.0 / 3.0
@@ -339,7 +366,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Differential entropy in nats
         """
-        return jnp.log(self.scale) + self.shape + 1.0
+        return jnp.log(self.scale) + self.concentration + 1.0
 
     def survival_function(self, value: jnp.ndarray) -> jnp.ndarray:
         """
@@ -361,7 +388,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
             Survival probabilities
         """
         scale = jnp.asarray(self.scale)
-        shape = jnp.asarray(self.shape)
+        shape = jnp.asarray(self.concentration)
         value = jnp.asarray(value)
         is_exponential = jnp.abs(shape) < self._exponential_threshold
         safe_shape = jnp.where(is_exponential, jnp.ones_like(shape), shape)
@@ -397,7 +424,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Hazard rate values
         """
-        scale, shape = self.scale, self.shape
+        scale, shape = self.scale, self.concentration
 
         # Hazard rate: h(x) = 1 / (σ + ξx). Enforce BOTH the lower support
         # bound (GPD is defined for x ≥ 0; f(x)=0, S(x)=1 ⇒ h(x)=0 below)
@@ -425,7 +452,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
             Cumulative hazard rate values
         """
         scale = jnp.asarray(self.scale)
-        shape = jnp.asarray(self.shape)
+        shape = jnp.asarray(self.concentration)
         value = jnp.asarray(value)
         is_exponential = jnp.abs(shape) < self._exponential_threshold
         safe_shape = jnp.where(is_exponential, jnp.ones_like(shape), shape)
@@ -444,7 +471,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
 
     def return_level(self, return_period: float | jnp.ndarray) -> jnp.ndarray:
         """Return level. Thin wrapper for ``gpd_return_level``."""
-        return gpd_return_level(return_period, self.scale, self.shape)
+        return gpd_return_level(return_period, self.scale, self.concentration)
 
     def tail_index(self) -> jnp.ndarray:
         """
@@ -456,7 +483,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Tail index (1/ξ for ξ > 0, ∞ otherwise)
         """
-        return jnp.where(self.shape > 0, 1.0 / self.shape, jnp.inf)
+        return jnp.where(self.concentration > 0, 1.0 / self.concentration, jnp.inf)
 
     def exceedance_probability(self, threshold: jnp.ndarray) -> jnp.ndarray:
         """
@@ -488,7 +515,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Conditional excess mean values
         """
-        scale, shape = self.scale, self.shape
+        scale, shape = self.scale, self.concentration
 
         # Only valid for ξ < 1 and threshold within support
         mean_exists = shape < 1.0
@@ -513,7 +540,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Dictionary with threshold stability metrics
         """
-        scale, shape = self.scale, self.shape
+        scale, shape = self.scale, self.concentration
 
         # Reference threshold (typically the lowest)
         u0 = thresholds[0]
@@ -579,7 +606,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
             return self
         return type(self)(
             scale=jnp.broadcast_to(self.scale, batch_shape),
-            shape=jnp.broadcast_to(self.shape, batch_shape),
+            concentration=jnp.broadcast_to(self.concentration, batch_shape),
             validate_args=self._validate_args,
         )
 

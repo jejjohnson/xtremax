@@ -8,10 +8,13 @@ tail extreme value modeling.
 
 from __future__ import annotations
 
+import warnings
+
 import jax.numpy as jnp
 import numpyro.distributions as dist
 from jax import lax
 from jax.scipy.special import gammaln
+from jax.typing import ArrayLike
 from numpyro.distributions import constraints
 from numpyro.distributions.util import promote_shapes, validate_sample
 
@@ -89,15 +92,16 @@ class WeibullType3GEVD(dist.Distribution):
     arg_constraints = {
         "loc": constraints.real,
         "scale": constraints.positive,
-        "shape": constraints.less_than(0.0),  # Enforce ξ < 0 for Type III
+        "concentration": constraints.less_than(0.0),  # Enforce ξ < 0 for Type III
     }
-    reparametrized_params = ["loc", "scale", "shape"]
+    reparametrized_params = ["loc", "scale", "concentration"]
 
     def __init__(
         self,
-        loc: float = 0.0,
-        scale: float = 1.0,
-        shape: float = -0.1,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        concentration: ArrayLike | None = None,
+        shape: ArrayLike | None = None,
         validate_args: bool | None = None,
     ):
         """
@@ -106,11 +110,14 @@ class WeibullType3GEVD(dist.Distribution):
         Args:
             loc: Location parameter μ (real number)
             scale: Scale parameter σ (positive real number)
-            shape: Shape parameter ξ (negative real number, ξ < 0)
+            concentration: Shape parameter ξ (negative real number, ξ < 0)
+            shape: Deprecated backward-compatible alias for ``concentration``.
+                Stored as ``self.concentration``; the NumPyro-inherited
+                ``Distribution.shape()`` method is kept callable.
             validate_args: Whether to validate input arguments
 
         Raises:
-            ValueError: If ``validate_args=True`` and ``shape >= 0``
+            ValueError: If ``validate_args=True`` and ``concentration >= 0``
                 (enforced by the ``arg_constraints`` entry). The
                 previous Python branch ``if jnp.any(shape >= 0)`` was
                 tracer-unsafe: building the distribution inside a
@@ -118,11 +125,28 @@ class WeibullType3GEVD(dist.Distribution):
                 concretization error before sampling/log-prob could
                 run. ``arg_constraints`` already expresses the domain.
         """
-        self.loc, self.scale, self.shape = promote_shapes(loc, scale, shape)
+        if shape is not None:
+            if concentration is not None:
+                raise ValueError(
+                    "Pass only one of 'concentration' or the deprecated 'shape' alias."
+                )
+            warnings.warn(
+                "'shape' is deprecated; use 'concentration' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            concentration = shape
+
+        if concentration is None:
+            concentration = -0.1
+
+        self.loc, self.scale, self.concentration = promote_shapes(
+            loc, scale, concentration
+        )
 
         # Determine batch shape from broadcasted parameters
         batch_shape = lax.broadcast_shapes(
-            jnp.shape(self.loc), jnp.shape(self.scale), jnp.shape(self.shape)
+            jnp.shape(self.loc), jnp.shape(self.scale), jnp.shape(self.concentration)
         )
 
         super().__init__(batch_shape=batch_shape, validate_args=validate_args)
@@ -160,15 +184,15 @@ class WeibullType3GEVD(dist.Distribution):
     @validate_sample
     def log_prob(self, value: jnp.ndarray) -> jnp.ndarray:
         """Log PDF. Thin wrapper for ``weibull_log_prob``."""
-        return weibull_log_prob(value, self.loc, self.scale, self.shape)
+        return weibull_log_prob(value, self.loc, self.scale, self.concentration)
 
     def cdf(self, value: jnp.ndarray) -> jnp.ndarray:
         """CDF. Thin wrapper for :func:`~xtremax.primitives.weibull.weibull_cdf`."""
-        return weibull_cdf(value, self.loc, self.scale, self.shape)
+        return weibull_cdf(value, self.loc, self.scale, self.concentration)
 
     def icdf(self, q: jnp.ndarray) -> jnp.ndarray:
         """Quantile function. Thin wrapper for ``weibull_icdf``."""
-        return weibull_icdf(q, self.loc, self.scale, self.shape)
+        return weibull_icdf(q, self.loc, self.scale, self.concentration)
 
     @property
     def support(self) -> constraints.Constraint:
@@ -191,7 +215,7 @@ class WeibullType3GEVD(dist.Distribution):
             Upper bound of the distribution support
         """
         # Since ξ < 0, -σ/ξ = σ/|ξ| > 0
-        return self.loc - self.scale / self.shape
+        return self.loc - self.scale / self.concentration
 
     def lower_bound(self) -> jnp.ndarray:
         """
@@ -207,7 +231,7 @@ class WeibullType3GEVD(dist.Distribution):
     @property
     def mean(self) -> jnp.ndarray:
         """Mean. Thin wrapper for :func:`~xtremax.primitives.weibull.weibull_mean`."""
-        return weibull_mean(self.loc, self.scale, self.shape)
+        return weibull_mean(self.loc, self.scale, self.concentration)
 
     @property
     def mode(self) -> jnp.ndarray:
@@ -224,7 +248,7 @@ class WeibullType3GEVD(dist.Distribution):
         Returns:
             Mode of the distribution
         """
-        loc, scale, shape = self.loc, self.scale, self.shape
+        loc, scale, shape = self.loc, self.scale, self.concentration
         has_interior_mode = shape > -1.0
         safe_base = jnp.where(has_interior_mode, 1.0 + shape, 1.0)
 
@@ -248,7 +272,7 @@ class WeibullType3GEVD(dist.Distribution):
         Returns:
             Variance (always finite on the Type III domain).
         """
-        _loc, scale, shape = self.loc, self.scale, self.shape
+        _loc, scale, shape = self.loc, self.scale, self.concentration
 
         # Γ(1 - 2ξ) and Γ(1 - ξ) are finite for every ξ < 0 (argument > 1).
         gamma1 = jnp.exp(gammaln(1.0 - 2.0 * shape))  # Γ(1-2ξ)
@@ -267,7 +291,7 @@ class WeibullType3GEVD(dist.Distribution):
         Returns:
             Excess kurtosis (always finite on the Type III domain).
         """
-        shape = self.shape
+        shape = self.concentration
 
         g1 = jnp.exp(gammaln(1.0 - shape))  # Γ(1-ξ)
         g2 = jnp.exp(gammaln(1.0 - 2.0 * shape))  # Γ(1-2ξ)
@@ -289,7 +313,7 @@ class WeibullType3GEVD(dist.Distribution):
         Returns:
             Skewness (always finite on the Type III domain).
         """
-        shape = self.shape
+        shape = self.concentration
 
         g1 = jnp.exp(gammaln(1.0 - shape))  # Γ(1-ξ)
         g2 = jnp.exp(gammaln(1.0 - 2.0 * shape))  # Γ(1-2ξ)
@@ -315,7 +339,7 @@ class WeibullType3GEVD(dist.Distribution):
         Returns:
             Differential entropy in nats
         """
-        scale, shape = self.scale, self.shape
+        scale, shape = self.scale, self.concentration
         euler_gamma = 0.5772156649015329
 
         return jnp.log(scale) + 1.0 + euler_gamma * (1.0 + shape)
@@ -369,7 +393,9 @@ class WeibullType3GEVD(dist.Distribution):
 
     def return_level(self, return_period: float | jnp.ndarray) -> jnp.ndarray:
         """Return level. Thin wrapper for ``weibull_return_level``."""
-        return weibull_return_level(return_period, self.loc, self.scale, self.shape)
+        return weibull_return_level(
+            return_period, self.loc, self.scale, self.concentration
+        )
 
     def tail_index(self) -> jnp.ndarray:
         """
@@ -382,7 +408,7 @@ class WeibullType3GEVD(dist.Distribution):
         Returns:
             NaN (tail index not defined for bounded distributions)
         """
-        return jnp.full_like(self.shape, jnp.nan)
+        return jnp.full_like(self.concentration, jnp.nan)
 
     def exceedance_probability(self, threshold: jnp.ndarray) -> jnp.ndarray:
         """
@@ -420,14 +446,30 @@ class WeibullType3GEVD(dist.Distribution):
         # GEVD.conditional_excess_mean.
         s_u_safe = jnp.clip(s_u, 1e-12, 1.0 - 1e-6)
         log_s_u = jnp.log(s_u_safe)
-        log_y_min = jnp.asarray(-6.0 * jnp.log(10.0))  # log(1e-6)
+        # Lower log-y endpoint: step ~20 e-folds below log_s_u so the
+        # grid always captures the bulk of the tail-integrand mass
+        # AND stays strictly ascending. A fixed floor like log(1e-6)
+        # would run backward when S(u) < 1e-6 (near the upper
+        # endpoint) and trapezoid would sign-flip. The
+        # ``-jnp.log1p(-y)`` step below is accurate to subnormals in
+        # float32. See GEVD.conditional_excess_mean for details.
+        span = jnp.asarray(20.0, dtype=log_s_u.dtype)
+        log_y_min = log_s_u - span
 
         unit = jnp.linspace(0.0, 1.0, n_grid)
         log_s_u_exp = jnp.expand_dims(log_s_u, axis=-1)
-        v_grid = log_y_min * (1.0 - unit) + log_s_u_exp * unit
+        log_y_min_exp = jnp.expand_dims(log_y_min, axis=-1)
+        v_grid = log_y_min_exp * (1.0 - unit) + log_s_u_exp * unit
         y_grid = jnp.exp(v_grid)
-        p_grid = 1.0 - y_grid
-        x_grid = self.icdf(p_grid)
+        # Compute ``x = F⁻¹(1 - y)`` directly from ``y`` using
+        # ``-log1p(-y)``. For ``y`` near ``eps(float32)`` the
+        # round-tripped ``p = 1 - y`` keeps only ~1 ulp of precision and
+        # ``log(p)`` inside ``weibull_icdf`` loses that entirely. See
+        # GEVD.conditional_excess_mean for details. ξ < 0 is enforced
+        # by ``arg_constraints``, so the Gumbel branch is unreachable.
+        shape = self.concentration
+        neg_log_q = -jnp.log1p(-y_grid)
+        x_grid = self.loc + (self.scale / shape) * (jnp.power(neg_log_q, -shape) - 1.0)
 
         integrand = x_grid * y_grid
         numerator = jnp.trapezoid(integrand, x=v_grid, axis=-1)
@@ -497,7 +539,7 @@ class WeibullType3GEVD(dist.Distribution):
         return type(self)(
             loc=jnp.broadcast_to(self.loc, batch_shape),
             scale=jnp.broadcast_to(self.scale, batch_shape),
-            shape=jnp.broadcast_to(self.shape, batch_shape),
+            concentration=jnp.broadcast_to(self.concentration, batch_shape),
             validate_args=self._validate_args,
         )
 

@@ -570,20 +570,40 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         # and ``icdf(0)`` diverges to -∞ for unbounded-below branches.
         s_u_safe = jnp.clip(s_u, 1e-12, 1.0 - 1e-6)
         log_s_u = jnp.log(s_u_safe)
-        # log_y_min = log(1e-6): float32-safe (1 - 1e-6 ≈ 0.999999 is
-        # distinct from 1.0; tighter caps like 1e-12 round back to 1.0
-        # in float32 so p = 1 - y collapses to 1 and icdf(1) = +∞).
-        # Tail contribution beyond y ≤ 1e-6 is negligible for ξ < 1
-        # (integrand decays as y^{1-ξ}).
-        log_y_min = jnp.asarray(-6.0 * jnp.log(10.0))
+        # Lower endpoint of the log-y integration range: step ~20
+        # e-folds below log_s_u so the grid always captures the bulk
+        # of the tail-integrand mass for ξ < 1 AND stays strictly
+        # ascending (``v_grid`` dx > 0). Without this, a fixed floor
+        # like log(1e-6) would run backward when S(u) < 1e-6 and
+        # trapezoid would sign-flip the result. The downstream
+        # ``-jnp.log1p(-y_grid)`` computation is accurate down to
+        # float32 subnormals, so we can safely push y well below
+        # eps(float32) without the precision blow-up that a raw
+        # ``log(1 - y)`` route would hit.
+        span = jnp.asarray(20.0, dtype=log_s_u.dtype)
+        log_y_min = log_s_u - span
 
         unit = jnp.linspace(0.0, 1.0, n_grid)
         log_s_u_exp = jnp.expand_dims(log_s_u, axis=-1)
-        # v grid ascending from log_y_min to log S(u).
-        v_grid = log_y_min * (1.0 - unit) + log_s_u_exp * unit
+        log_y_min_exp = jnp.expand_dims(log_y_min, axis=-1)
+        # v grid ascending from log_y_min up to log S(u). If log_y_min
+        # >= log_s_u (untrustworthy regime; mask below returns NaN),
+        # the grid is degenerate but numerically bounded.
+        v_grid = log_y_min_exp * (1.0 - unit) + log_s_u_exp * unit
         y_grid = jnp.exp(v_grid)
-        p_grid = 1.0 - y_grid
-        x_grid = self.icdf(p_grid)
+        # Compute ``x = F⁻¹(1 - y)`` directly from ``y`` using
+        # ``-log1p(-y)`` instead of going through ``self.icdf(1 - y)``.
+        # For ``y`` near ``eps(float32)`` the round-tripped ``p = 1 - y``
+        # in float32 only retains ~1 ulp of precision, and the
+        # downstream ``log(p)`` in ``gev_icdf`` loses that — icdf comes
+        # out finite but wildly wrong and the quadrature sign-flips.
+        # ``log1p(-y)`` is designed for exactly this small-y regime.
+        neg_log_q = -jnp.log1p(-y_grid)
+        is_gumbel = jnp.abs(shape) < self._gumbel_threshold
+        xi = jnp.where(is_gumbel, 1.0, shape)
+        gumbel_x = self.loc - self.scale * jnp.log(neg_log_q)
+        gev_x = self.loc + (self.scale / xi) * (jnp.power(neg_log_q, -xi) - 1.0)
+        x_grid = jnp.where(is_gumbel, gumbel_x, gev_x)
 
         integrand = x_grid * y_grid  # F⁻¹(1-y) · y, multiplied by dv=dy/y
         numerator = jnp.trapezoid(integrand, x=v_grid, axis=-1)

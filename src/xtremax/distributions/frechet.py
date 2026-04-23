@@ -8,10 +8,13 @@ extreme value modeling with power-law tail behavior.
 
 from __future__ import annotations
 
+import warnings
+
 import jax.numpy as jnp
 import numpyro.distributions as dist
 from jax import lax
 from jax.scipy.special import gammaln
+from jax.typing import ArrayLike
 from numpyro.distributions import constraints
 from numpyro.distributions.util import promote_shapes, validate_sample
 
@@ -86,7 +89,7 @@ class FrechetType2GEVD(dist.Distribution):
         >>> # Key properties
         >>> print(f"Lower bound: {heavy_tail.lower_bound()}")
         >>> print(f"Tail index: {heavy_tail.tail_index()}")
-        >>> print(f"Mean exists: {heavy_tail.shape < 1}")
+        >>> print(f"Mean exists: {heavy_tail.concentration < 1}")
         >>>
         >>> # Sample and evaluate
         >>> key = jax.random.PRNGKey(42)
@@ -98,15 +101,16 @@ class FrechetType2GEVD(dist.Distribution):
     arg_constraints = {
         "loc": constraints.real,
         "scale": constraints.positive,
-        "shape": constraints.positive,  # Enforce ξ > 0 for Type II
+        "concentration": constraints.positive,  # Enforce ξ > 0 for Type II
     }
-    reparametrized_params = ["loc", "scale", "shape"]
+    reparametrized_params = ["loc", "scale", "concentration"]
 
     def __init__(
         self,
-        loc: float = 0.0,
-        scale: float = 1.0,
-        shape: float = 0.1,
+        loc: ArrayLike = 0.0,
+        scale: ArrayLike = 1.0,
+        concentration: ArrayLike | None = None,
+        shape: ArrayLike | None = None,
         validate_args: bool | None = None,
     ):
         """
@@ -115,11 +119,14 @@ class FrechetType2GEVD(dist.Distribution):
         Args:
             loc: Location parameter μ (real number)
             scale: Scale parameter σ (positive real number)
-            shape: Shape parameter ξ (positive real number, ξ > 0)
+            concentration: Shape parameter ξ (positive real number, ξ > 0)
+            shape: Deprecated backward-compatible alias for ``concentration``.
+                Stored as ``self.concentration``; the NumPyro-inherited
+                ``Distribution.shape()`` method is kept callable.
             validate_args: Whether to validate input arguments
 
         Raises:
-            ValueError: If ``validate_args=True`` and ``shape <= 0``
+            ValueError: If ``validate_args=True`` and ``concentration <= 0``
                 (enforced by the ``arg_constraints`` entry). The
                 previous Python branch ``if jnp.any(shape <= 0)`` was
                 tracer-unsafe: building the distribution inside a
@@ -127,11 +134,28 @@ class FrechetType2GEVD(dist.Distribution):
                 concretization error before sampling/log-prob could
                 run. ``arg_constraints`` already expresses the domain.
         """
-        self.loc, self.scale, self.shape = promote_shapes(loc, scale, shape)
+        if shape is not None:
+            if concentration is not None:
+                raise ValueError(
+                    "Pass only one of 'concentration' or the deprecated 'shape' alias."
+                )
+            warnings.warn(
+                "'shape' is deprecated; use 'concentration' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            concentration = shape
+
+        if concentration is None:
+            concentration = 0.1
+
+        self.loc, self.scale, self.concentration = promote_shapes(
+            loc, scale, concentration
+        )
 
         # Determine batch shape from broadcasted parameters
         batch_shape = lax.broadcast_shapes(
-            jnp.shape(self.loc), jnp.shape(self.scale), jnp.shape(self.shape)
+            jnp.shape(self.loc), jnp.shape(self.scale), jnp.shape(self.concentration)
         )
 
         super().__init__(batch_shape=batch_shape, validate_args=validate_args)
@@ -168,15 +192,15 @@ class FrechetType2GEVD(dist.Distribution):
     @validate_sample
     def log_prob(self, value: jnp.ndarray) -> jnp.ndarray:
         """Log PDF. Thin wrapper for ``frechet_log_prob``."""
-        return frechet_log_prob(value, self.loc, self.scale, self.shape)
+        return frechet_log_prob(value, self.loc, self.scale, self.concentration)
 
     def cdf(self, value: jnp.ndarray) -> jnp.ndarray:
         """CDF. Thin wrapper for :func:`~xtremax.primitives.frechet.frechet_cdf`."""
-        return frechet_cdf(value, self.loc, self.scale, self.shape)
+        return frechet_cdf(value, self.loc, self.scale, self.concentration)
 
     def icdf(self, q: jnp.ndarray) -> jnp.ndarray:
         """Quantile function. Thin wrapper for ``frechet_icdf``."""
-        return frechet_icdf(q, self.loc, self.scale, self.shape)
+        return frechet_icdf(q, self.loc, self.scale, self.concentration)
 
     @property
     def support(self) -> constraints.Constraint:
@@ -209,12 +233,12 @@ class FrechetType2GEVD(dist.Distribution):
         Returns:
             Lower bound of the distribution support
         """
-        return self.loc - self.scale / self.shape
+        return self.loc - self.scale / self.concentration
 
     @property
     def mean(self) -> jnp.ndarray:
         """Mean. Thin wrapper for :func:`~xtremax.primitives.frechet.frechet_mean`."""
-        return frechet_mean(self.loc, self.scale, self.shape)
+        return frechet_mean(self.loc, self.scale, self.concentration)
 
     @property
     def mode(self) -> jnp.ndarray:
@@ -229,7 +253,7 @@ class FrechetType2GEVD(dist.Distribution):
         Returns:
             Mode of the distribution
         """
-        loc, scale, shape = self.loc, self.scale, self.shape
+        loc, scale, shape = self.loc, self.scale, self.concentration
 
         return loc + (scale / shape) * (jnp.power(1.0 + shape, -shape) - 1.0)
 
@@ -246,7 +270,7 @@ class FrechetType2GEVD(dist.Distribution):
         Returns:
             Variance or +∞ when it doesn't exist (ξ ≥ 1/2)
         """
-        _loc, scale, shape = self.loc, self.scale, self.shape
+        _loc, scale, shape = self.loc, self.scale, self.concentration
 
         # Variance exists for ξ < 1/2
         var_exists = shape < 0.5
@@ -269,7 +293,7 @@ class FrechetType2GEVD(dist.Distribution):
         Returns:
             Excess kurtosis or +∞ when it doesn't exist (ξ ≥ 1/4)
         """
-        shape = self.shape
+        shape = self.concentration
 
         # Kurtosis exists for ξ < 1/4
         kurt_exists = shape < 0.25
@@ -300,7 +324,7 @@ class FrechetType2GEVD(dist.Distribution):
         Returns:
             Skewness or +∞ when it doesn't exist (ξ ≥ 1/3)
         """
-        shape = self.shape
+        shape = self.concentration
 
         # Skewness exists for ξ < 1/3
         skew_exists = shape < 1.0 / 3.0
@@ -332,7 +356,7 @@ class FrechetType2GEVD(dist.Distribution):
         Returns:
             Differential entropy in nats
         """
-        scale, shape = self.scale, self.shape
+        scale, shape = self.scale, self.concentration
         euler_gamma = 0.5772156649015329
 
         return jnp.log(scale) + 1.0 + euler_gamma * (1.0 + shape)
@@ -365,7 +389,7 @@ class FrechetType2GEVD(dist.Distribution):
         Returns:
             Log survival probabilities
         """
-        loc, scale, shape = self.loc, self.scale, self.shape
+        loc, scale, shape = self.loc, self.scale, self.concentration
         z = (value - loc) / scale
         t = 1.0 + shape * z
 
@@ -410,7 +434,9 @@ class FrechetType2GEVD(dist.Distribution):
 
     def return_level(self, return_period: float | jnp.ndarray) -> jnp.ndarray:
         """Return level. Thin wrapper for ``frechet_return_level``."""
-        return frechet_return_level(return_period, self.loc, self.scale, self.shape)
+        return frechet_return_level(
+            return_period, self.loc, self.scale, self.concentration
+        )
 
     def tail_index(self) -> jnp.ndarray:
         """
@@ -424,7 +450,7 @@ class FrechetType2GEVD(dist.Distribution):
         Returns:
             Tail index α = 1/ξ
         """
-        return 1.0 / self.shape
+        return 1.0 / self.concentration
 
     def exceedance_probability(self, threshold: jnp.ndarray) -> jnp.ndarray:
         """
@@ -453,7 +479,7 @@ class FrechetType2GEVD(dist.Distribution):
         does not exist).
         """
         threshold_arr = jnp.asarray(threshold)
-        shape = self.shape
+        shape = self.concentration
 
         # Log-space tail-probability quadrature (see GEVD implementation
         # for the derivation). This replaces the earlier linear-p grid
@@ -466,14 +492,30 @@ class FrechetType2GEVD(dist.Distribution):
         # GEVD.conditional_excess_mean.
         s_u_safe = jnp.clip(s_u, 1e-12, 1.0 - 1e-6)
         log_s_u = jnp.log(s_u_safe)
-        log_y_min = jnp.asarray(-6.0 * jnp.log(10.0))  # log(1e-6)
+        # Lower log-y endpoint: step ~20 e-folds below log_s_u so the
+        # grid always captures the bulk of the tail-integrand mass
+        # (ξ < 1) AND stays strictly ascending. A fixed floor like
+        # log(1e-6) would run backward when S(u) < 1e-6 and trapezoid
+        # would sign-flip. The ``-jnp.log1p(-y)`` step below is
+        # accurate to subnormals in float32, so y can safely go below
+        # eps(float32). See GEVD.conditional_excess_mean for details.
+        span = jnp.asarray(20.0, dtype=log_s_u.dtype)
+        log_y_min = log_s_u - span
 
         unit = jnp.linspace(0.0, 1.0, n_grid)
         log_s_u_exp = jnp.expand_dims(log_s_u, axis=-1)
-        v_grid = log_y_min * (1.0 - unit) + log_s_u_exp * unit
+        log_y_min_exp = jnp.expand_dims(log_y_min, axis=-1)
+        v_grid = log_y_min_exp * (1.0 - unit) + log_s_u_exp * unit
         y_grid = jnp.exp(v_grid)
-        p_grid = 1.0 - y_grid
-        x_grid = self.icdf(p_grid)
+        # Compute ``x = F⁻¹(1 - y)`` directly from ``y`` using
+        # ``-log1p(-y)``. For ``y`` near ``eps(float32)`` the
+        # round-tripped ``p = 1 - y`` keeps only ~1 ulp of precision and
+        # ``log(p)`` inside ``frechet_icdf`` loses that entirely, so the
+        # quadrature sign-flips at very high thresholds. See
+        # GEVD.conditional_excess_mean for details. ξ > 0 is enforced
+        # by ``arg_constraints``, so the Gumbel branch is unreachable.
+        neg_log_q = -jnp.log1p(-y_grid)
+        x_grid = self.loc + (self.scale / shape) * (jnp.power(neg_log_q, -shape) - 1.0)
 
         integrand = x_grid * y_grid
         numerator = jnp.trapezoid(integrand, x=v_grid, axis=-1)
@@ -516,7 +558,7 @@ class FrechetType2GEVD(dist.Distribution):
         Returns:
             Tuple of (GPD scale parameter, GPD shape parameter)
         """
-        loc, scale, shape = self.loc, self.scale, self.shape
+        loc, scale, shape = self.loc, self.scale, self.concentration
 
         # GPD parameters for excesses over threshold
         gpd_scale = scale + shape * (threshold - loc)
@@ -570,7 +612,7 @@ class FrechetType2GEVD(dist.Distribution):
         Returns:
             Relative change in tail probabilities under scaling
         """
-        return jnp.power(scale_factor, -1.0 / self.shape)
+        return jnp.power(scale_factor, -1.0 / self.concentration)
 
     def expand(self, batch_shape: tuple[int, ...]) -> dist.Distribution:
         """Expand to ``batch_shape`` by reconstructing via ``__init__``."""
@@ -580,7 +622,7 @@ class FrechetType2GEVD(dist.Distribution):
         return type(self)(
             loc=jnp.broadcast_to(self.loc, batch_shape),
             scale=jnp.broadcast_to(self.scale, batch_shape),
-            shape=jnp.broadcast_to(self.shape, batch_shape),
+            concentration=jnp.broadcast_to(self.concentration, batch_shape),
             validate_args=self._validate_args,
         )
 
