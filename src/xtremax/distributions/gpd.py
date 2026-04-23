@@ -1,0 +1,559 @@
+"""
+Generalized Pareto Distribution (GPD) for NumPyro
+
+This module provides a robust implementation of the GPD with extensive statistical
+methods and proper NumPyro integration for threshold exceedance modeling in extreme
+value theory and peaks-over-threshold (POT) analysis.
+"""
+
+from __future__ import annotations
+
+import jax.numpy as jnp
+import numpyro.distributions as dist
+from jax import lax
+from numpyro.distributions import constraints
+from numpyro.distributions.util import promote_shapes, validate_sample
+
+from xtremax.primitives.gpd import (
+    gpd_cdf,
+    gpd_icdf,
+    gpd_log_prob,
+    gpd_mean,
+    gpd_return_level,
+)
+
+
+class GeneralizedParetoDistribution(dist.Distribution):
+    """
+    Generalized Pareto Distribution (GPD) for NumPyro.
+
+    The Generalized Pareto Distribution is fundamental in extreme value theory
+    for modeling threshold exceedances in the Peaks-Over-Threshold (POT) framework.
+    It emerges as the limiting distribution of scaled excesses over high thresholds
+    for a wide class of underlying distributions.
+
+    **Key Characteristics:**
+    - Models excesses above a threshold: Y = X - u | X > u
+    - Three families based on shape parameter ξ:
+      * ξ > 0: Pareto-type (heavy tails, power-law decay)
+      * ξ = 0: Exponential-type (exponential tails)
+      * ξ < 0: Beta-type (bounded support, light tails)
+    - Direct connection to GEVD via POT theory
+    - Foundation for threshold-based extreme value modeling
+
+    **Probability Density Function:**
+
+    For ξ ≠ 0:
+        f(x) = (1/σ) * (1 + ξx/σ)^(-(1/ξ + 1))
+
+    For ξ = 0 (exponential limit):
+        f(x) = (1/σ) * exp(-x/σ)
+
+    **Cumulative Distribution Function:**
+
+    For ξ ≠ 0:
+        F(x) = 1 - (1 + ξx/σ)^(-1/ξ)
+
+    For ξ = 0:
+        F(x) = 1 - exp(-x/σ)
+
+    **Support:**
+
+    - ξ ≥ 0: x ≥ 0 (non-negative)
+    - ξ < 0: 0 ≤ x ≤ -σ/ξ (bounded above)
+
+    **Parameters:**
+
+    - scale (σ): Scale parameter > 0
+    - shape (ξ): Shape parameter ∈ ℝ
+
+    **Connection to GEVD:**
+
+    If block maxima follow GEVD(μ, σ*, ξ), then threshold excesses
+    follow GPD(σ + ξ(u - μ), ξ) where u is the threshold.
+
+    **Applications:**
+
+    - Financial risk: Value-at-Risk, Expected Shortfall modeling
+    - Hydrology: Flood frequency analysis above design levels
+    - Insurance: Large claim modeling, catastrophe reinsurance
+    - Engineering: Structural reliability, extreme load analysis
+    - Environmental: Pollution exceedances, extreme weather events
+    - Telecommunications: Network traffic bursts, service failures
+
+    Examples:
+        >>> import jax
+        >>> import jax.numpy as jnp
+        >>>
+        >>> # Heavy-tailed excesses (financial losses)
+        >>> heavy_tail_gpd = GeneralizedParetoDistribution(scale=1000, shape=0.25)
+        >>>
+        >>> # Exponential excesses (reliability applications)
+        >>> exponential_gpd = GeneralizedParetoDistribution(scale=500, shape=0.0)
+        >>>
+        >>> # Bounded excesses (physical constraints)
+        >>> bounded_gpd = GeneralizedParetoDistribution(scale=100, shape=-0.2)
+        >>>
+        >>> # Key properties
+        >>> print(f"Mean (heavy tail): {heavy_tail_gpd.mean}")
+        >>> print(f"Upper bound (bounded): {bounded_gpd.upper_bound()}")
+        >>> print(f"Tail index (heavy): {heavy_tail_gpd.tail_index()}")
+        >>>
+        >>> # Sample and analyze
+        >>> key = jax.random.PRNGKey(42)
+        >>> samples = heavy_tail_gpd.sample(key, sample_shape=(1000,))
+        >>> log_probs = heavy_tail_gpd.log_prob(samples)
+    """
+
+    # NumPyro distribution interface requirements
+    arg_constraints = {"scale": constraints.positive, "shape": constraints.real}
+    reparametrized_params = ["scale", "shape"]
+
+    def __init__(
+        self, scale: float = 1.0, shape: float = 0.0, validate_args: bool | None = None
+    ):
+        """
+        Initialize the Generalized Pareto Distribution.
+
+        Args:
+            scale: Scale parameter σ > 0
+            shape: Shape parameter ξ ∈ ℝ
+                  * ξ > 0: Heavy tails (Pareto-type)
+                  * ξ = 0: Exponential tails
+                  * ξ < 0: Light tails, bounded support (Beta-type)
+            validate_args: Whether to validate input arguments
+
+        Raises:
+            ValueError: If scale <= 0
+        """
+        self.scale, self.shape = promote_shapes(scale, shape)
+
+        # Determine batch shape from broadcasted parameters
+        batch_shape = lax.broadcast_shapes(jnp.shape(self.scale), jnp.shape(self.shape))
+
+        # Numerical threshold for exponential approximation (ξ ≈ 0)
+        self._exponential_threshold = 1e-8
+
+        super().__init__(batch_shape=batch_shape, validate_args=validate_args)
+
+    def sample(self, key: jnp.ndarray, sample_shape: tuple = ()) -> jnp.ndarray:
+        """
+        Generate samples from the GPD using inverse transform sampling.
+
+        The sampling uses the quantile function:
+
+        For ξ ≠ 0:
+            Q(p) = (σ/ξ) * ((1-p)^(-ξ) - 1)
+
+        For ξ = 0:
+            Q(p) = -σ * ln(1-p)
+
+        Args:
+            key: JAX random key for sampling
+            sample_shape: Shape of samples to generate
+
+        Returns:
+            Array of samples from the GPD (all within support)
+        """
+        assert not jnp.issubdtype(key.dtype, jnp.integer)
+        shape = sample_shape + self.batch_shape
+
+        # Generate uniform random variables U ~ Uniform(0,1)
+        uniform_samples = dist.Uniform(0.0, 1.0).sample(key, shape)
+
+        # Apply inverse CDF transformation
+        return self.icdf(uniform_samples)
+
+    @validate_sample
+    def log_prob(self, value: jnp.ndarray) -> jnp.ndarray:
+        """Log PDF. Thin wrapper for :func:`~xtremax.primitives.gpd.gpd_log_prob`."""
+        return gpd_log_prob(value, self.scale, self.shape)
+
+    def cdf(self, value: jnp.ndarray) -> jnp.ndarray:
+        """CDF. Thin wrapper for :func:`~xtremax.primitives.gpd.gpd_cdf`."""
+        return gpd_cdf(value, self.scale, self.shape)
+
+    def icdf(self, q: jnp.ndarray) -> jnp.ndarray:
+        """Quantile function. Thin wrapper for ``gpd_icdf``."""
+        return gpd_icdf(q, self.scale, self.shape)
+
+    @property
+    def support(self) -> constraints.Constraint:
+        """
+        Return the support constraint for GPD.
+
+        Returns:
+            Constraint object:
+            - ξ ≥ 0: [0, +∞)
+            - ξ < 0: [0, -σ/ξ]
+        """
+        return constraints.nonnegative
+
+    def upper_bound(self) -> jnp.ndarray:
+        """
+        Compute the upper bound of the support.
+
+        Returns:
+            Upper bound:
+            - ξ ≥ 0: +∞
+            - ξ < 0: -σ/ξ
+        """
+        return jnp.where(self.shape < 0, -self.scale / self.shape, jnp.inf)
+
+    def lower_bound(self) -> jnp.ndarray:
+        """
+        Compute the lower bound of the support.
+
+        Returns:
+            Lower bound: 0 (always non-negative for GPD)
+        """
+        return jnp.zeros_like(self.scale)
+
+    @property
+    def mean(self) -> jnp.ndarray:
+        """Mean. Thin wrapper for :func:`~xtremax.primitives.gpd.gpd_mean`."""
+        return gpd_mean(self.scale, self.shape)
+
+    @property
+    def mode(self) -> jnp.ndarray:
+        """
+        Compute the mode of the GPD.
+
+        The mode is always 0 for the GPD, representing the threshold
+        (most likely exceedance is just above the threshold).
+
+        Returns:
+            Mode (always 0)
+        """
+        return jnp.zeros_like(self.scale)
+
+    @property
+    def variance(self) -> jnp.ndarray:
+        """
+        Compute the variance of the GPD.
+
+        Variance exists when ξ < 1/2:
+
+        For ξ < 1/2:
+            Var[X] = σ² / ((1-ξ)²(1-2ξ))
+
+        For ξ ≥ 1/2:
+            Var[X] = +∞ (infinite variance)
+
+        Returns:
+            Variance or +∞ when it doesn't exist
+        """
+        scale, shape = self.scale, self.shape
+
+        # Variance exists for ξ < 1/2
+        var_exists = shape < 0.5
+
+        # Variance formula: σ² / ((1-ξ)²(1-2ξ))
+        denominator = (1.0 - shape) ** 2 * (1.0 - 2.0 * shape)
+        var_val = (scale**2) / denominator
+
+        return jnp.where(var_exists, var_val, jnp.inf)
+
+    def kurtosis(self) -> jnp.ndarray:
+        """
+        Compute the excess kurtosis of the GPD.
+
+        Excess kurtosis exists when ξ < 1/4:
+
+        κ = 3(1-2ξ)(2ξ²+ξ+3) / ((1-3ξ)(1-4ξ)) - 3
+
+        Returns:
+            Excess kurtosis or +∞ when it doesn't exist
+        """
+        shape = self.shape
+
+        # Kurtosis exists for ξ < 1/4
+        kurt_exists = shape < 0.25
+
+        # Handle exponential case (ξ = 0) separately
+        is_exponential = jnp.abs(shape) < self._exponential_threshold
+        exponential_kurtosis = 6.0  # Known value for exponential distribution
+
+        # General formula for ξ ≠ 0
+        numerator = 3.0 * (1.0 - 2.0 * shape) * (2.0 * shape**2 + shape + 3.0)
+        denominator = (1.0 - 3.0 * shape) * (1.0 - 4.0 * shape)
+        general_kurtosis = numerator / denominator - 3.0
+
+        kurtosis_val = jnp.where(is_exponential, exponential_kurtosis, general_kurtosis)
+
+        return jnp.where(kurt_exists, kurtosis_val, jnp.inf)
+
+    def skew(self) -> jnp.ndarray:
+        """
+        Compute the skewness of the GPD.
+
+        Skewness exists when ξ < 1/3:
+
+        γ₃ = 2(1+ξ)√(1-2ξ) / (1-3ξ)
+
+        Returns:
+            Skewness or +∞ when it doesn't exist
+        """
+        shape = self.shape
+
+        # Skewness exists for ξ < 1/3
+        skew_exists = shape < 1.0 / 3.0
+
+        # Handle exponential case
+        is_exponential = jnp.abs(shape) < self._exponential_threshold
+        exponential_skewness = 2.0  # Known value for exponential distribution
+
+        # General formula
+        numerator = 2.0 * (1.0 + shape) * jnp.sqrt(1.0 - 2.0 * shape)
+        denominator = 1.0 - 3.0 * shape
+        general_skewness = numerator / denominator
+
+        skewness_val = jnp.where(is_exponential, exponential_skewness, general_skewness)
+
+        return jnp.where(skew_exists, skewness_val, jnp.inf)
+
+    def entropy(self) -> jnp.ndarray:
+        """
+        Compute the differential entropy of the GPD.
+
+        For the GPD:
+        H = log(σ) + ξ + 1
+
+        Returns:
+            Differential entropy in nats
+        """
+        return jnp.log(self.scale) + self.shape + 1.0
+
+    def survival_function(self, value: jnp.ndarray) -> jnp.ndarray:
+        """
+        Compute the survival function S(x) = 1 - F(x).
+
+        For ξ ≠ 0:
+            S(x) = (1 + ξx/σ)^(-1/ξ)
+
+        For ξ = 0:
+            S(x) = exp(-x/σ)
+
+        This has direct interpretation in POT models as the probability
+        of observing an exceedance larger than x.
+
+        Args:
+            value: Points at which to evaluate survival function
+
+        Returns:
+            Survival probabilities
+        """
+        scale, shape = self.shape, self.shape
+
+        # Support check
+        valid = (value >= 0.0) & (value <= self.upper_bound())
+
+        is_exponential = jnp.abs(shape) < self._exponential_threshold
+
+        def exponential_survival(x):
+            return jnp.exp(-x / scale)
+
+        def pareto_survival(x, xi):
+            t = 1.0 + xi * x / scale
+            t_valid = t > 0.0
+            surv_val = jnp.power(jnp.where(t_valid, t, 1.0), -1.0 / xi)
+            return jnp.where(t_valid, surv_val, 0.0)
+
+        surv_exp = exponential_survival(value)
+        surv_pareto = pareto_survival(value, shape)
+
+        survival_result = jnp.where(is_exponential, surv_exp, surv_pareto)
+
+        return jnp.where(valid, survival_result, 0.0)
+
+    def hazard_rate(self, value: jnp.ndarray) -> jnp.ndarray:
+        """
+        Compute the hazard rate h(x) = f(x) / S(x).
+
+        For GPD:
+        h(x) = 1 / (σ + ξx)
+
+        This represents the instantaneous failure rate in reliability
+        applications or the rate of threshold exceedance.
+
+        Args:
+            value: Points at which to evaluate hazard rate
+
+        Returns:
+            Hazard rate values
+        """
+        scale, shape = self.scale, self.shape
+
+        # Hazard rate: h(x) = 1 / (σ + ξx)
+        denominator = scale + shape * value
+
+        # Ensure denominator is positive (within support)
+        valid = denominator > 0.0
+        hazard_val = 1.0 / jnp.where(valid, denominator, 1.0)
+
+        return jnp.where(valid, hazard_val, 0.0)
+
+    def cumulative_hazard_rate(self, value: jnp.ndarray) -> jnp.ndarray:
+        """
+        Compute the cumulative hazard rate Λ(x) = -log(S(x)).
+
+        For ξ ≠ 0:
+            Λ(x) = (1/ξ) * log(1 + ξx/σ)
+
+        For ξ = 0:
+            Λ(x) = x/σ
+
+        Args:
+            value: Points at which to evaluate cumulative hazard rate
+
+        Returns:
+            Cumulative hazard rate values
+        """
+        return -jnp.log(self.survival_function(value))
+
+    def return_level(self, return_period: float | jnp.ndarray) -> jnp.ndarray:
+        """Return level. Thin wrapper for ``gpd_return_level``."""
+        return gpd_return_level(return_period, self.scale, self.shape)
+
+    def tail_index(self) -> jnp.ndarray:
+        """
+        Compute the tail index for GPD.
+
+        For GPD with ξ > 0: tail index α = 1/ξ
+        For ξ ≤ 0: tail index is not defined (no power-law tail)
+
+        Returns:
+            Tail index (1/ξ for ξ > 0, ∞ otherwise)
+        """
+        return jnp.where(self.shape > 0, 1.0 / self.shape, jnp.inf)
+
+    def exceedance_probability(self, threshold: jnp.ndarray) -> jnp.ndarray:
+        """
+        Compute probability of exceeding a threshold: P(X > threshold).
+
+        This is the survival function and fundamental for POT analysis.
+
+        Args:
+            threshold: Threshold value
+
+        Returns:
+            Exceedance probabilities
+        """
+        return self.survival_function(threshold)
+
+    def conditional_excess_mean(self, threshold: jnp.ndarray) -> jnp.ndarray:
+        """
+        Compute the mean excess function: E[X - u | X > u].
+
+        For GPD, this has the simple form:
+        E[X - u | X > u] = (σ + ξu) / (1 - ξ)
+
+        This linear relationship is a key property of GPD and forms
+        the basis for threshold selection in POT modeling.
+
+        Args:
+            threshold: Threshold value u
+
+        Returns:
+            Conditional excess mean values
+        """
+        scale, shape = self.scale, self.shape
+
+        # Only valid for ξ < 1 and threshold within support
+        mean_exists = shape < 1.0
+        within_support = (threshold >= 0.0) & (threshold < self.upper_bound())
+        valid = mean_exists & within_support
+
+        # Mean excess: (σ + ξu) / (1 - ξ)
+        excess_mean = (scale + shape * threshold) / (1.0 - shape)
+
+        return jnp.where(valid, excess_mean, jnp.inf)
+
+    def threshold_stability_plot_data(self, thresholds: jnp.ndarray) -> dict:
+        """
+        Generate data for threshold stability plots in POT analysis.
+
+        Returns modified scale parameters σ* = σ + ξ(u - u₀) for different
+        thresholds, which should be approximately constant if GPD fits well.
+
+        Args:
+            thresholds: Array of threshold values
+
+        Returns:
+            Dictionary with threshold stability metrics
+        """
+        scale, shape = self.scale, self.shape
+
+        # Reference threshold (typically the lowest)
+        u0 = thresholds[0]
+
+        # Modified scale parameters for each threshold
+        modified_scales = scale + shape * (thresholds - u0)
+
+        # Shape parameters (should remain constant)
+        shapes = jnp.full_like(thresholds, shape)
+
+        return {
+            "thresholds": thresholds,
+            "modified_scales": modified_scales,
+            "shapes": shapes,
+            "reference_threshold": u0,
+        }
+
+    def hill_plot_data(
+        self, order_statistics: jnp.ndarray, k_values: jnp.ndarray
+    ) -> dict:
+        """
+        Generate data for Hill plots (tail index estimation).
+
+        Computes Hill estimator: α̂_k = (1/k) * Σᵢ₌₁ᵏ log(X_{n-i+1,n} / X_{n-k,n})
+
+        Args:
+            order_statistics: Sorted sample in descending order
+            k_values: Numbers of upper order statistics to use
+
+        Returns:
+            Dictionary with Hill plot data
+        """
+        n = len(order_statistics)
+
+        hill_estimates = []
+        for k in k_values:
+            if k >= n or k <= 0:
+                hill_estimates.append(jnp.nan)
+                continue
+
+            # Hill estimator
+            log_ratios = jnp.log(order_statistics[:k] / order_statistics[k])
+            hill_est = jnp.mean(log_ratios)
+            hill_estimates.append(1.0 / hill_est if hill_est > 0 else jnp.inf)
+
+        return {
+            "k_values": k_values,
+            "hill_estimates": jnp.array(hill_estimates),
+            "theoretical_tail_index": self.tail_index(),
+        }
+
+    def expand(
+        self, batch_shape: tuple, _instance: dist.Distribution | None = None
+    ) -> dist.Distribution:
+        """
+        Expand the distribution to a new batch shape.
+
+        Args:
+            batch_shape: New batch shape
+            _instance: Optional instance for type checking
+
+        Returns:
+            Expanded distribution instance
+        """
+        new = self._get_checked_instance(type(self), _instance)
+        batch_shape = lax.broadcast_shapes(self.batch_shape, batch_shape)
+        new.scale = jnp.broadcast_to(self.scale, batch_shape)
+        new.shape = jnp.broadcast_to(self.shape, batch_shape)
+        return new._validate_args(self._validate_args)
+
+
+# Convenient aliases
+GPD = GeneralizedParetoDistribution
+ParetoDistribution = GeneralizedParetoDistribution
