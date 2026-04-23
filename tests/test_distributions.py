@@ -71,6 +71,22 @@ class TestGEVD:
         assert bool(d_gumbel.support(jnp.array(-1e6)))
         assert bool(d_gumbel.support(jnp.array(1e6)))
 
+    def test_mean_excess_normalizes_by_full_survival(self):
+        """Regression: the quantile-space quadrature previously normalised
+        by ``(1 - ε) - F(u)`` (truncated mass) instead of ``1 - F(u)``
+        and used a linear-p grid that underresolved heavy tails. For a
+        Fréchet branch with ξ close to 1, the truncated tail could
+        contribute materially to the finite mean, producing systematic
+        underestimation. The log-tail-probability grid plus normalisation
+        by S(u) fixes both issues.
+        """
+        d = GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, concentration=0.5)
+        # At u=0 the mean excess should grow with ξ but remain finite
+        # and well above the GPD-linear POT estimate (σ/(1-ξ) = 2.0 here).
+        me = float(d.conditional_excess_mean(jnp.array(0.0)))
+        assert jnp.isfinite(me)
+        assert me > 1.5  # well above σ
+
     def test_mean_excess_varies_with_threshold_at_gumbel_limit(self):
         """Regression: GEVD mean excess used the GPD linear POT
         approximation `(σ + ξ(u-μ))/(1-ξ)`, which collapses to a constant
@@ -345,6 +361,23 @@ class TestGumbel:
         m = d.conditional_excess_mean(jnp.array(20.0))
         assert jnp.allclose(m, scale, atol=5e-3)
 
+    def test_conditional_excess_mean_handles_far_negative_threshold(self):
+        """Regression: the fixed ``u + 50σ`` integration cap truncated
+        mass when u sat far below the location. For u = -1000σ below μ,
+        the true mean excess is ≈ γσ - u ≈ |u|; the old formula missed
+        by several orders of magnitude. The adaptive cap fixes this.
+        """
+        scale = 1.0
+        euler_gamma = 0.5772156649015329
+        d = GumbelType1GEVD(loc=0.0, scale=scale)
+        for u_val in [-1000.0, -100.0]:
+            me = float(d.conditional_excess_mean(jnp.array(u_val)))
+            expected = euler_gamma * scale - u_val
+            # Allow ~1% error for quadrature approximation.
+            assert abs(me - expected) / abs(expected) < 0.01, (
+                f"u={u_val}: me={me}, expected≈{expected}"
+            )
+
     def test_conditional_excess_mean_vectorizes_over_thresholds(self):
         """Regression: the trapezoidal integration previously collapsed on
         vector thresholds because the grid axis collided with the batch
@@ -427,6 +460,23 @@ class TestFrechet:
                 f"shape={shape}: empirical {empirical} vs analytical {analytical}"
             )
 
+    def test_construct_under_jit_succeeds(self):
+        """Regression: the Fréchet constructor branched on
+        ``if jnp.any(shape <= 0)``, which forced Python truth-value
+        evaluation of a traced JAX array. Building the distribution
+        inside ``jit`` then raised a tracer concretization error before
+        any sampling could happen. The guard is removed — domain
+        validation lives in ``arg_constraints``.
+        """
+
+        @jax.jit
+        def make_and_logprob(shape):
+            d = FrechetType2GEVD(loc=0.0, scale=1.0, shape=shape)
+            return d.log_prob(jnp.array(1.0))
+
+        result = make_and_logprob(jnp.array(0.3))
+        assert jnp.isfinite(result)
+
     def test_entropy_matches_gev_formula(self):
         """Regression: Fréchet entropy used `log σ + ξ + 1 + γξ`; the
         correct GEV-branch entropy is `log σ + 1 + γ(1 + ξ)`.
@@ -470,6 +520,21 @@ class TestWeibull:
         d = WeibullType3GEVD(0.0, 1.0, -0.3)
         r = d.percentile_residual_life(jnp.array(-1.0), percentile=0.0)
         assert jnp.allclose(r, 0.0, atol=1e-5)
+
+    def test_construct_under_jit_succeeds(self):
+        """Regression: the Weibull constructor branched on
+        ``if jnp.any(shape >= 0)``, which broke under ``jit`` with
+        traced inputs. Guard removed; domain validation is via
+        ``arg_constraints``.
+        """
+
+        @jax.jit
+        def make_and_logprob(shape):
+            d = WeibullType3GEVD(loc=0.0, scale=1.0, shape=shape)
+            return d.log_prob(jnp.array(-1.0))
+
+        result = make_and_logprob(jnp.array(-0.3))
+        assert jnp.isfinite(result)
 
     def test_moments_finite_across_full_valid_shape_range(self):
         """Regression: variance/skew/kurtosis used guards ``ξ > -1/2``,

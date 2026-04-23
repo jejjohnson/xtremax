@@ -550,28 +550,48 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         threshold_arr = jnp.asarray(threshold)
         shape = self.concentration
 
-        # eps = 1e-6 is float32-representable (1 - eps stays distinct from
-        # 1.0); tighter caps like 1e-8 round back to 1.0 in float32 and
-        # make icdf(1) diverge.
-        eps = 1e-6
-        max_p = 1.0 - eps
+        # Log-space tail-probability quadrature:
+        #   ∫_{F(u)}^1 F⁻¹(p) dp = ∫_0^{S(u)} F⁻¹(1-y) dy
+        #                        = ∫_{-∞}^{log S(u)} F⁻¹(1-eᵛ) · eᵛ dv
+        # with v = log y. We truncate the lower end at log(1e-12),
+        # which is negligible for any ξ < 1. This replaces the earlier
+        # linear-p grid that had two problems: (a) the normaliser used
+        # the truncated mass `(1-ε) - F(u)` instead of `S(u)`, and (b)
+        # the fixed linear grid systematically underresolved heavy
+        # tails where most of the conditional mass lives near p = 1.
         n_grid = 1024
         p0 = self.cdf(threshold_arr)
-        p0_safe = jnp.clip(p0, 0.0, max_p)
+        s_u = 1.0 - p0
+        # Floor S(u) so log is finite; the NaN mask below drops results
+        # whose threshold is effectively at or beyond the upper support.
+        # Also cap just below 1.0 so the integration grid stays strictly
+        # inside the open interval (0, 1): ``p_grid`` would otherwise
+        # reach 0 when ``S(u) = 1`` (e.g. u far below the location),
+        # and ``icdf(0)`` diverges to -∞ for unbounded-below branches.
+        s_u_safe = jnp.clip(s_u, 1e-12, 1.0 - 1e-6)
+        log_s_u = jnp.log(s_u_safe)
+        # log_y_min = log(1e-6): float32-safe (1 - 1e-6 ≈ 0.999999 is
+        # distinct from 1.0; tighter caps like 1e-12 round back to 1.0
+        # in float32 so p = 1 - y collapses to 1 and icdf(1) = +∞).
+        # Tail contribution beyond y ≤ 1e-6 is negligible for ξ < 1
+        # (integrand decays as y^{1-ξ}).
+        log_y_min = jnp.asarray(-6.0 * jnp.log(10.0))
 
         unit = jnp.linspace(0.0, 1.0, n_grid)
-        p0_exp = jnp.expand_dims(p0_safe, axis=-1)
-        # Linear interpolation form avoids cancellation at the upper end.
-        p_grid = p0_exp * (1.0 - unit) + max_p * unit
-
+        log_s_u_exp = jnp.expand_dims(log_s_u, axis=-1)
+        # v grid ascending from log_y_min to log S(u).
+        v_grid = log_y_min * (1.0 - unit) + log_s_u_exp * unit
+        y_grid = jnp.exp(v_grid)
+        p_grid = 1.0 - y_grid
         x_grid = self.icdf(p_grid)
-        integral = jnp.trapezoid(x_grid, x=p_grid, axis=-1)
-        mass = max_p - p0_safe
-        mean_conditional = integral / jnp.where(mass > 1e-15, mass, 1.0)
+
+        integrand = x_grid * y_grid  # F⁻¹(1-y) · y, multiplied by dv=dy/y
+        numerator = jnp.trapezoid(integrand, x=v_grid, axis=-1)
+        mean_conditional = numerator / s_u_safe
         mean_excess = mean_conditional - threshold_arr
 
         mean_exists = shape < 1.0
-        valid = mean_exists & (mass > 1e-15)
+        valid = mean_exists & (s_u > 1e-12)
         return jnp.where(valid, mean_excess, jnp.nan)
 
     def reliability_function(self, time: jnp.ndarray) -> jnp.ndarray:

@@ -429,22 +429,32 @@ class GumbelType1GEVD(dist.Distribution):
 
         Returns ``NaN`` where the survival probability is effectively zero.
         """
-        scale_arr = jnp.asarray(self.scale)
         threshold_arr = jnp.asarray(threshold)
+        scale_arr = jnp.asarray(self.scale)
 
-        # Put the integration grid on a new trailing axis so batch dims
-        # (if any) come first. `expand_dims(..., axis=-1)` turns shape
-        # `()` into `(1,)` and `(B,)` into `(B, 1)`, letting the
-        # `(N,)` grid broadcast without collisions.
-        unit = jnp.linspace(0.0, 50.0, 1024)
-        offsets = unit * jnp.expand_dims(scale_arr, axis=-1)
-        grid = jnp.expand_dims(threshold_arr, axis=-1) + offsets
+        # Trapezoidal quadrature of the IBP form
+        #   E[X - u | X > u] = (1/S(u)) ∫_u^∞ S(x) dx
+        # with an *adaptive* upper cap chosen as the further of
+        # ``u + 50σ`` (enough for exponential-tail decay from u) and
+        # ``icdf(1 - 1e-6)`` (absolute far-tail quantile). The fixed
+        # ``u + 50σ`` cap used previously truncated substantial mass
+        # when u sat far below the location (e.g. u = μ - 1000σ),
+        # biasing the mean excess low by O(|u|). The adaptive cap
+        # handles both far-left and far-right thresholds correctly.
+        n_grid = 1024
+        q_top = jnp.asarray(1.0 - 1e-6, dtype=scale_arr.dtype)
+        x_top = self.icdf(q_top)
+        upper = jnp.maximum(threshold_arr + 50.0 * scale_arr, x_top)
 
-        integrand = self.survival_function(grid)
-        # Integrate along the grid axis explicitly.
-        integral = jnp.trapezoid(integrand, x=offsets, axis=-1)
-        survival_u = self.survival_function(threshold_arr)
-        return jnp.where(survival_u > 1e-15, integral / survival_u, jnp.nan)
+        unit = jnp.linspace(0.0, 1.0, n_grid)
+        t_exp = jnp.expand_dims(threshold_arr, axis=-1)
+        u_exp = jnp.expand_dims(upper, axis=-1)
+        x_grid = t_exp + (u_exp - t_exp) * unit  # (..., n_grid)
+
+        integrand = self.survival_function(x_grid)
+        integral = jnp.trapezoid(integrand, x=x_grid, axis=-1)
+        s_u = self.survival_function(threshold_arr)
+        return jnp.where(s_u > 1e-15, integral / s_u, jnp.nan)
 
     def median(self) -> jnp.ndarray:
         """

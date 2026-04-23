@@ -110,14 +110,14 @@ class WeibullType3GEVD(dist.Distribution):
             validate_args: Whether to validate input arguments
 
         Raises:
-            ValueError: If scale <= 0 or shape >= 0
+            ValueError: If ``validate_args=True`` and ``shape >= 0``
+                (enforced by the ``arg_constraints`` entry). The
+                previous Python branch ``if jnp.any(shape >= 0)`` was
+                tracer-unsafe: building the distribution inside a
+                ``jit``-compiled NumPyro model would raise a tracer
+                concretization error before sampling/log-prob could
+                run. ``arg_constraints`` already expresses the domain.
         """
-        # Enforce Type III constraint: ξ < 0
-        if jnp.any(shape >= 0):
-            raise ValueError(
-                "Shape parameter must be negative for Weibull Type III GEVD (ξ < 0)"
-            )
-
         self.loc, self.scale, self.shape = promote_shapes(loc, scale, shape)
 
         # Determine batch shape from broadcasted parameters
@@ -410,24 +410,31 @@ class WeibullType3GEVD(dist.Distribution):
         """
         threshold_arr = jnp.asarray(threshold)
 
-        # See GEVD.conditional_excess_mean — eps=1e-6 is float32-safe.
-        eps = 1e-6
-        max_p = 1.0 - eps
+        # Log-space tail-probability quadrature (see GEVD implementation
+        # for the derivation). Correctly normalises by S(u) rather than
+        # the truncated mass `(1-ε) - F(u)`.
         n_grid = 1024
         p0 = self.cdf(threshold_arr)
-        p0_safe = jnp.clip(p0, 0.0, max_p)
+        s_u = 1.0 - p0
+        # Cap away from 1.0 so p_grid stays strictly in (0, 1). See
+        # GEVD.conditional_excess_mean.
+        s_u_safe = jnp.clip(s_u, 1e-12, 1.0 - 1e-6)
+        log_s_u = jnp.log(s_u_safe)
+        log_y_min = jnp.asarray(-6.0 * jnp.log(10.0))  # log(1e-6)
 
         unit = jnp.linspace(0.0, 1.0, n_grid)
-        p0_exp = jnp.expand_dims(p0_safe, axis=-1)
-        p_grid = p0_exp * (1.0 - unit) + max_p * unit
-
+        log_s_u_exp = jnp.expand_dims(log_s_u, axis=-1)
+        v_grid = log_y_min * (1.0 - unit) + log_s_u_exp * unit
+        y_grid = jnp.exp(v_grid)
+        p_grid = 1.0 - y_grid
         x_grid = self.icdf(p_grid)
-        integral = jnp.trapezoid(x_grid, x=p_grid, axis=-1)
-        mass = max_p - p0_safe
-        mean_conditional = integral / jnp.where(mass > 1e-15, mass, 1.0)
+
+        integrand = x_grid * y_grid
+        numerator = jnp.trapezoid(integrand, x=v_grid, axis=-1)
+        mean_conditional = numerator / s_u_safe
         mean_excess = mean_conditional - threshold_arr
 
-        return jnp.where(mass > 1e-15, mean_excess, jnp.nan)
+        return jnp.where(s_u > 1e-12, mean_excess, jnp.nan)
 
     def reliability_function(self, time: jnp.ndarray) -> jnp.ndarray:
         """
