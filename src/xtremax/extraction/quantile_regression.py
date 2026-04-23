@@ -184,6 +184,12 @@ def _build_feature_matrix(
     feature_names = ["time"]
 
     if covariates is not None:
+        # Align covariates to the response's time coordinate before
+        # extracting raw values. Without this, a covariate series in a
+        # different order (or with gaps) silently pairs with the wrong
+        # targets and produces numerically wrong thresholds with no
+        # error raised.
+        covariates = covariates.reindex({time_dim: da.coords[time_dim]})
         cov_np = covariates.values
         if cov_np.ndim == 1:
             columns.append(cov_np)

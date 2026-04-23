@@ -147,8 +147,12 @@ class WeibullType3GEVD(dist.Distribution):
         check_prng_key(key)
         shape = sample_shape + self.batch_shape
 
-        # Generate uniform random variables U ~ Uniform(0,1)
+        # JAX's Uniform(0, 1) sampler can emit exact 0 or 1 at the
+        # endpoints; passing those to icdf yields -inf/+inf and poisons
+        # downstream computations. Clamp away from the endpoints.
         uniform_samples = dist.Uniform(0.0, 1.0).sample(key, shape)
+        eps = jnp.finfo(uniform_samples.dtype).eps
+        uniform_samples = jnp.clip(uniform_samples, eps, 1.0 - eps)
 
         # Apply inverse CDF transformation
         return self.icdf(uniform_samples)

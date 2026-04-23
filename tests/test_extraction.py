@@ -365,6 +365,38 @@ from xtremax.extraction.quantile_regression import (
 
 
 class TestQuantileRegression:
+    def test_threshold_aligns_shuffled_covariate(self):
+        """Regression: `_build_feature_matrix` read `covariates.values`
+        without reindexing to the response's time coord, so a covariate
+        in a different order paired with the wrong targets and produced
+        a numerically wrong threshold with no error raised.
+        """
+        rng = np.random.default_rng(0)
+        time = pd.date_range("2000-01-01", periods=365, freq="D")
+        # Response with strong dependence on an integer covariate.
+        cov_values = rng.standard_normal(len(time))
+        response = 5.0 * cov_values + 0.1 * rng.standard_normal(len(time))
+        da = xr.DataArray(response, dims="time", coords={"time": time})
+        cov = xr.DataArray(cov_values, dims="time", coords={"time": time})
+
+        # Shuffle the covariate's time axis; its *values* still correspond
+        # to the correct timestamps via the coord, so after alignment the
+        # fit should match the unshuffled case.
+        perm = rng.permutation(len(time))
+        cov_shuffled = cov.isel(time=perm)
+
+        t_ordered = quantile_regression_threshold(
+            da, quantile=0.9, time_dim="time", covariates=cov
+        )
+        t_shuffled = quantile_regression_threshold(
+            da, quantile=0.9, time_dim="time", covariates=cov_shuffled
+        )
+        # After reindexing, shuffled input produces the same threshold
+        # as the ordered one (within solver tolerance).
+        np.testing.assert_allclose(
+            t_ordered.values, t_shuffled.values, rtol=1e-4, atol=1e-4
+        )
+
     def test_regressor_fits(self, daily_series):
         reg = XarrayQuantileRegressor(quantile=0.95)
         # Use time as covariate

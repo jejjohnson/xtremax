@@ -104,11 +104,14 @@ def create_iberian_domain(
     Creates the master spatial dataset with Lat, Lon, Elevation, and Land Mask.
     """
     lon_min, lon_max, lat_min, lat_max = bounds
-    n_lat = int((lat_max - lat_min) / res_deg)
-    n_lon = int((lon_max - lon_min) / res_deg)
-
-    lats = np.linspace(lat_min, lat_max, n_lat)
-    lons = np.linspace(lon_min, lon_max, n_lon)
+    # `np.linspace(min, max, n)` puts points at both endpoints, giving
+    # spacing `(max-min)/(n-1)` not `res_deg` (e.g. 36–44 at 0.1 would
+    # yield ~0.1013). Use `np.arange` so realized spacing equals the
+    # requested resolution exactly.
+    lats = np.arange(lat_min, lat_max, res_deg)
+    lons = np.arange(lon_min, lon_max, res_deg)
+    n_lat = lats.size
+    n_lon = lons.size
     lon_grid, lat_grid = np.meshgrid(lons, lats)
 
     # 1. Generate Mask

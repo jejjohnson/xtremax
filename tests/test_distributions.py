@@ -520,6 +520,36 @@ class TestPRNGKeyValidation:
         with pytest.raises(TypeError, match="JAX PRNG key"):
             d.sample(not_a_key, sample_shape=(4,))
 
+    def test_sample_does_not_emit_plus_minus_infinity(self):
+        """Regression: inverse-transform sampling used Uniform(0, 1) whose
+        JAX sampler can emit exact 0 (and 1 in some dtypes), sending
+        icdf to -inf (Gumbel/GEV at p=0) or +inf (Fréchet at p=1).
+        Samples must now all be finite.
+        """
+        from xtremax.distributions import (
+            FrechetType2GEVD,
+            GeneralizedExtremeValueDistribution,
+            GeneralizedParetoDistribution,
+            WeibullType3GEVD,
+        )
+
+        key = jax.random.key(0)
+        dists = [
+            GumbelType1GEVD(loc=0.0, scale=1.0),
+            GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, concentration=0.0),
+            GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, concentration=0.2),
+            GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, concentration=-0.2),
+            GeneralizedParetoDistribution(scale=1.0, shape=0.2),
+            GeneralizedParetoDistribution(scale=1.0, shape=-0.2),
+            FrechetType2GEVD(loc=0.0, scale=1.0, shape=0.3),
+            WeibullType3GEVD(loc=0.0, scale=1.0, shape=-0.3),
+        ]
+        for d in dists:
+            samples = d.sample(key, sample_shape=(4096,))
+            assert bool(jnp.all(jnp.isfinite(samples))), (
+                f"{type(d).__name__} emitted non-finite samples"
+            )
+
     def test_rejects_wrong_shape_uint32_with_typeerror(self):
         """A uint32 array that isn't shaped like a legacy key must still
         be rejected (e.g. `uint32[5]` where the trailing dim != 2).

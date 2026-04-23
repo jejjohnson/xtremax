@@ -65,6 +65,22 @@ class TestSpatial:
         assert terrain.shape == (32, 32)
         assert np.all(np.isfinite(terrain))
 
+    def test_iberian_domain_honors_requested_resolution(self):
+        """Regression: `n = int((max-min)/res)` + `np.linspace(min, max, n)`
+        created `n` points over a closed interval, so realized spacing
+        was `(max-min)/(n-1)` — not `res_deg`. E.g. 36–44 at 0.1 yielded
+        ~0.1013 spacing, silently distorting downstream distance-derived
+        features.
+        """
+        from xtremax.simulations.spatial import create_iberian_domain
+
+        ds = create_iberian_domain(res_deg=0.1, bounds=(-10, 5, 36, 44), seed=0)
+        # Both axes must have exactly `res_deg` spacing.
+        lat_spacing = np.diff(ds["lat"].values)
+        lon_spacing = np.diff(ds["lon"].values)
+        np.testing.assert_allclose(lat_spacing, 0.1, atol=1e-10)
+        np.testing.assert_allclose(lon_spacing, 0.1, atol=1e-10)
+
     def test_fractal_terrain_does_not_mutate_global_rng(self):
         """Regression: `generate_fractal_terrain` called `np.random.seed(seed)`
         at the top, which leaks reproducibility coupling into unrelated
