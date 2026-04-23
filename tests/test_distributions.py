@@ -42,6 +42,24 @@ class TestGEVD:
         lp = dist.log_prob(samples)
         assert jnp.all(jnp.isfinite(lp))
 
+    def test_mode_matches_argmax_of_pdf(self):
+        """Regression: the non-Gumbel mode used `(1+ξ)^ξ` with the wrong
+        exponent sign. The correct stationary point is `(1+ξ)^(-ξ)`.
+        Verify by grid-search argmax of the pdf for a few shapes.
+        """
+        for shape in [-0.3, -0.1, 0.1, 0.3]:
+            d = GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, shape=shape)
+            # Grid covers a wide range relative to the typical mode of
+            # σ·((1+ξ)^(-ξ) - 1)/ξ (a fraction of σ around μ).
+            grid = jnp.linspace(-5.0, 5.0, 20001)
+            pdf = jnp.exp(d.log_prob(grid))
+            safe_pdf = jnp.where(jnp.isfinite(pdf), pdf, -1.0)
+            empirical = float(grid[jnp.argmax(safe_pdf)])
+            analytical = float(d.mode)
+            assert abs(empirical - analytical) < 5e-3, (
+                f"shape={shape}: empirical {empirical} vs analytical {analytical}"
+            )
+
 
 class TestGPD:
     def test_log_prob_and_sample_shape(self, key):
@@ -80,6 +98,25 @@ class TestGPD:
         expected_gumbel = float(jnp.log(scale) + 1.0 + euler_gamma)
         assert jnp.allclose(d_gumbel.entropy(), expected_gumbel, atol=1e-5)
         assert jnp.allclose(d_tiny.entropy(), d_gumbel.entropy(), atol=1e-6)
+
+    def test_hazard_rate_zero_below_support(self):
+        """Regression: GPD hazard_rate previously only checked `σ + ξx > 0`,
+        so for `x < 0` (outside GPD support where f=0, S=1, h=0) it returned
+        positive hazards instead of zero.
+        """
+        d = GeneralizedParetoDistribution(scale=1.5, shape=0.2)
+        x_below = jnp.array([-5.0, -1.0, -0.01])
+        h = d.hazard_rate(x_below)
+        assert jnp.all(h == 0.0)
+
+    def test_hazard_rate_matches_pdf_over_survival_on_support(self):
+        """Within the support hazard must equal f/S."""
+        d = GeneralizedParetoDistribution(scale=1.5, shape=0.2)
+        x = jnp.array([0.0, 0.5, 1.0, 2.0, 5.0])
+        pdf = jnp.exp(d.log_prob(x))
+        surv = d.survival_function(x)
+        expected = pdf / surv
+        assert jnp.allclose(d.hazard_rate(x), expected, rtol=1e-5)
 
     def test_survival_uses_scale_not_shape(self):
         """Regression: survival_function previously aliased `scale = self.shape`.
@@ -190,6 +227,16 @@ class TestFrechet:
         log_s = d.log_survival_function(x)
         expected = jnp.log(1.0 - d.cdf(x))
         assert jnp.allclose(log_s, expected, atol=1e-5)
+
+    def test_entropy_matches_gev_formula(self):
+        """Regression: Fréchet entropy used `log σ + ξ + 1 + γξ`; the
+        correct GEV-branch entropy is `log σ + 1 + γ(1 + ξ)`.
+        """
+        scale, shape = 1.7, 0.25
+        d = FrechetType2GEVD(loc=0.0, scale=scale, shape=shape)
+        euler_gamma = 0.5772156649015329
+        expected = float(jnp.log(scale) + 1.0 + euler_gamma * (1.0 + shape))
+        assert jnp.allclose(d.entropy(), expected, atol=1e-6)
 
 
 class TestWeibull:

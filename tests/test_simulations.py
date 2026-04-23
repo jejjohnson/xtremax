@@ -39,6 +39,16 @@ class TestTemporal:
         assert "gmst" in ds.data_vars
         assert np.all(np.isfinite(ds["gmst"].values))
 
+    @pytest.mark.parametrize("n_years", [10, 20, 50])
+    def test_physical_gmst_year_count(self, n_years):
+        """Regression: `np.linspace(0, n_years, n_years * 12)` included
+        `t = n_years`, so the floor(t) grouping created an extra final bin
+        with a single sample and produced `n_years + 1` annual rows
+        instead of `n_years`.
+        """
+        ds = generate_physical_gmst(n_years=n_years, seed=0)
+        assert ds.sizes["year"] == n_years
+
 
 class TestSpatial:
     def test_iberia_mask(self):

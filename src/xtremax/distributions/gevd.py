@@ -230,7 +230,7 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         Compute the mode of the distribution.
 
         For ξ ≠ 0:
-            mode = μ + (σ/ξ) * ((1+ξ)^ξ - 1)
+            mode = μ + (σ/ξ) * ((1+ξ)^(-ξ) - 1)
 
         For ξ = 0:
             mode = μ
@@ -246,7 +246,7 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
             return loc
 
         def gevd_mode():
-            return loc + (scale / shape) * (jnp.power(1.0 + shape, shape) - 1.0)
+            return loc + (scale / shape) * (jnp.power(1.0 + shape, -shape) - 1.0)
 
         mode_gumbel = gumbel_mode()
         mode_gevd = gevd_mode()

@@ -120,7 +120,11 @@ def generate_physical_gmst(
     # --------------------------------------------------------------------------
     # 1. Physics Constants & Setup
     # --------------------------------------------------------------------------
-    t_eval = np.linspace(0, n_years, n_years * 12)  # Monthly resolution output
+    # Exclude the terminal endpoint: `np.linspace(0, n_years, n_years * 12)`
+    # includes `t = n_years`, which falls in a floor(t) = n_years bin and
+    # produces an extra final-year row with a single sample. Using
+    # endpoint=False keeps exactly `n_years` monthly bins per integer year.
+    t_eval = np.linspace(0, n_years, n_years * 12, endpoint=False)
     F_2xCO2 = 3.7  # Radiative forcing for doubling CO2 (W/m2)
 
     # Calculate Feedback Parameter (lambda)

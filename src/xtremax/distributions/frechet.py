@@ -320,9 +320,11 @@ class FrechetType2GEVD(dist.Distribution):
         Compute the differential entropy of the Fréchet Type II GEVD.
 
         The entropy is:
-        H = log(σ) + ξ + 1 + γ*ξ
+        H = log(σ) + 1 + γ * (1 + ξ)
 
-        where γ is the Euler-Mascheroni constant ≈ 0.5772.
+        where γ is the Euler-Mascheroni constant ≈ 0.5772. This is the
+        standard GEV entropy formula evaluated at the Fréchet branch
+        (ξ > 0); at ξ = 0 it reduces to the Gumbel entropy `log σ + 1 + γ`.
 
         Returns:
             Differential entropy in nats
@@ -330,8 +332,7 @@ class FrechetType2GEVD(dist.Distribution):
         scale, shape = self.scale, self.shape
         euler_gamma = 0.5772156649015329
 
-        # Entropy formula for Fréchet Type II
-        return jnp.log(scale) + shape + 1.0 + euler_gamma * shape
+        return jnp.log(scale) + 1.0 + euler_gamma * (1.0 + shape)
 
     def survival_function(self, value: jnp.ndarray) -> jnp.ndarray:
         """

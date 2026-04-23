@@ -364,11 +364,11 @@ class GeneralizedParetoDistribution(dist.Distribution):
         """
         scale, shape = self.scale, self.shape
 
-        # Hazard rate: h(x) = 1 / (σ + ξx)
+        # Hazard rate: h(x) = 1 / (σ + ξx). Enforce BOTH the lower support
+        # bound (GPD is defined for x ≥ 0; f(x)=0, S(x)=1 ⇒ h(x)=0 below)
+        # and the upper bound in the bounded ξ < 0 case (σ + ξx > 0).
         denominator = scale + shape * value
-
-        # Ensure denominator is positive (within support)
-        valid = denominator > 0.0
+        valid = (denominator > 0.0) & (value >= 0.0)
         hazard_val = 1.0 / jnp.where(valid, denominator, 1.0)
 
         return jnp.where(valid, hazard_val, 0.0)
