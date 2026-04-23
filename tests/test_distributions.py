@@ -516,6 +516,23 @@ class TestFrechet:
         d = FrechetType2GEVD(loc=0.0, scale=1.0, concentration=0.2)
         assert bool(d.support(d.lower_bound()))
 
+    def test_survival_stays_positive_in_far_tail(self):
+        """Regression: ``survival_function`` used ``1 - self.cdf(x)`` and
+        catastrophically cancelled in the far right tail — once
+        ``F(x) ≈ 1 - 1e-8`` float32 rounds ``1 - F`` to zero, and
+        ``exceedance_probability``/``hazard_rate`` then return impossible
+        zero tail probabilities at finite inputs. The stable
+        ``-expm1(log F)`` form preserves the tail down to subnormals.
+        """
+        d = FrechetType2GEVD(loc=0.0, scale=1.0, concentration=0.3)
+        x = jnp.array([10.0, 100.0, 1000.0, 1e5])
+        s = d.survival_function(x)
+        # All finite inputs must give strictly positive survival.
+        assert bool(jnp.all(s > 0.0))
+        # And must match log_survival_function to round-off.
+        log_s = d.log_survival_function(x)
+        assert jnp.allclose(jnp.log(s), log_s, atol=1e-5)
+
 
 class TestWeibull:
     def test_log_prob_and_sample_shape(self, key):
@@ -628,6 +645,40 @@ class TestWeibull:
         """Weibull support is closed at the upper endpoint x = μ - σ/ξ."""
         d = WeibullType3GEVD(loc=0.0, scale=1.0, concentration=-0.2)
         assert bool(d.support(d.upper_bound()))
+
+    def test_survival_stays_positive_near_upper_endpoint(self):
+        """Regression: ``survival_function`` used ``1 - self.cdf(x)`` which
+        cancels to zero near the finite upper endpoint. Downstream
+        ``hazard_rate``/``cumulative_hazard_rate`` (via ``log(S)``) then
+        produced ``-inf``/``nan`` at valid in-support inputs. The stable
+        ``-expm1(log F)`` form preserves the tail down to subnormals.
+        """
+        d = WeibullType3GEVD(loc=0.0, scale=1.0, concentration=-0.3)
+        upper = float(d.upper_bound())
+        # Stay safely below the endpoint — the bug was that S collapsed
+        # to zero while still strictly inside support.
+        x = jnp.array([frac * upper for frac in [0.9, 0.99, 0.999, 0.9999]])
+        s = d.survival_function(x)
+        assert bool(jnp.all(s > 0.0))
+        log_s = d.log_survival_function(x)
+        # log_survival_function must agree with log(survival_function).
+        assert jnp.allclose(jnp.log(s), log_s, atol=1e-5)
+        # cumulative_hazard_rate must equal -log S and be finite here.
+        ch = d.cumulative_hazard_rate(x)
+        assert bool(jnp.all(jnp.isfinite(ch)))
+        assert jnp.allclose(ch, -log_s, atol=1e-6)
+
+    def test_survival_boundary_values(self):
+        """Weibull: S(x) = 1 below lower (in the unbounded-below part of
+        the real line) and S(x) = 0 above the finite upper endpoint.
+        """
+        d = WeibullType3GEVD(loc=0.0, scale=1.0, concentration=-0.3)
+        upper = float(d.upper_bound())
+        # Above upper bound → S = 0, log S = -inf.
+        assert float(d.survival_function(jnp.array(upper + 1.0))) == 0.0
+        assert float(d.log_survival_function(jnp.array(upper + 1.0))) == -float("inf")
+        # Well below support → S ≈ 1.
+        assert jnp.isclose(d.survival_function(jnp.array(-1e3)), 1.0, atol=1e-6)
 
 
 class TestPRNGKeyValidation:

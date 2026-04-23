@@ -357,7 +357,43 @@ class WeibullType3GEVD(dist.Distribution):
         Returns:
             Survival probabilities
         """
-        return 1.0 - self.cdf(value)
+        # Computed as ``-expm1(log F)`` rather than ``1 - F`` so the
+        # near-upper-endpoint regime stays resolvable: once
+        # ``F ≈ 1 - 1e-8``, float32 rounds ``1 - F`` to zero and
+        # downstream ``log(S)`` in hazard_rate/cumulative_hazard_rate
+        # returns ``-inf``/``nan`` even for valid in-support inputs.
+        loc, scale, shape = self.loc, self.scale, self.concentration
+        z = (value - loc) / scale
+        t = 1.0 + shape * z
+        valid = t > 0.0
+        log_cdf = -jnp.power(jnp.where(valid, t, 1.0), -1.0 / shape)
+        surv_inside = -jnp.expm1(log_cdf)
+        # Above the upper support bound (t ≤ 0 with ξ < 0), F(x) = 1 so
+        # S(x) = 0.
+        return jnp.where(valid, surv_inside, 0.0)
+
+    def log_survival_function(self, value: jnp.ndarray) -> jnp.ndarray:
+        """
+        Compute the log survival function log S(x) = log(1 - F(x)).
+
+        Directly evaluates ``log(-expm1(log F))`` to keep the near-upper-
+        endpoint regime numerically stable for hazard/cumulative-hazard
+        consumers.
+
+        Args:
+            value: Points at which to evaluate log survival function
+
+        Returns:
+            Log survival probabilities
+        """
+        loc, scale, shape = self.loc, self.scale, self.concentration
+        z = (value - loc) / scale
+        t = 1.0 + shape * z
+        valid = t > 0.0
+        log_cdf = -jnp.power(jnp.where(valid, t, 1.0), -1.0 / shape)
+        log_surv_inside = jnp.log(-jnp.expm1(log_cdf))
+        # Above the upper support bound, S(x) = 0 ⇒ log S = -∞.
+        return jnp.where(valid, log_surv_inside, -jnp.inf)
 
     def hazard_rate(self, value: jnp.ndarray) -> jnp.ndarray:
         """
@@ -373,7 +409,7 @@ class WeibullType3GEVD(dist.Distribution):
         Returns:
             Hazard rate values
         """
-        log_hazard = self.log_prob(value) - jnp.log(self.survival_function(value))
+        log_hazard = self.log_prob(value) - self.log_survival_function(value)
         return jnp.exp(log_hazard)
 
     def cumulative_hazard_rate(self, value: jnp.ndarray) -> jnp.ndarray:
@@ -389,7 +425,7 @@ class WeibullType3GEVD(dist.Distribution):
         Returns:
             Cumulative hazard rate values
         """
-        return -jnp.log(self.survival_function(value))
+        return -self.log_survival_function(value)
 
     def return_level(self, return_period: float | jnp.ndarray) -> jnp.ndarray:
         """Return level. Thin wrapper for ``weibull_return_level``."""

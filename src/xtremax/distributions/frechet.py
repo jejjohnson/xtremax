@@ -374,7 +374,20 @@ class FrechetType2GEVD(dist.Distribution):
         Returns:
             Survival probabilities (power-law tail behavior)
         """
-        return 1.0 - self.cdf(value)
+        # Computed as ``-expm1(log F)`` rather than ``1 - F`` so the
+        # far right tail stays resolvable: once ``F ≈ 1 - 1e-8``, float32
+        # rounds ``1 - F`` to zero while ``-expm1(-t^(-1/ξ))`` preserves
+        # the tail mass down to subnormals, keeping
+        # ``exceedance_probability`` / ``hazard_rate`` finite.
+        loc, scale, shape = self.loc, self.scale, self.concentration
+        z = (value - loc) / scale
+        t = 1.0 + shape * z
+        valid = t > 0.0
+        log_cdf = -jnp.power(jnp.where(valid, t, 1.0), -1.0 / shape)
+        surv_inside = -jnp.expm1(log_cdf)
+        # Below the lower support bound (t ≤ 0 with ξ > 0), F(x) = 0 so
+        # S(x) = 1.
+        return jnp.where(valid, surv_inside, 1.0)
 
     def log_survival_function(self, value: jnp.ndarray) -> jnp.ndarray:
         """
