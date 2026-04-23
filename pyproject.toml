@@ -112,6 +112,10 @@ invalid-method-override = "ignore"
 unresolved-attribute = "ignore"
 invalid-return-type = "ignore"
 not-iterable = "ignore"
+# NumPyro's `constraints.interval` is a class (factory); ty reads its
+# `__call__` as `(self, x)` rather than the constructor, flagging two-arg
+# construction. This is a stub/type-inference mismatch, not a real bug.
+too-many-positional-arguments = "ignore"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

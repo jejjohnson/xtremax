@@ -67,7 +67,10 @@ def generate_fractal_terrain(
     Generates coherent terrain using Fractal Brownian Motion (fBm).
     Instead of random elevations, this creates mountain ranges and valleys.
     """
-    np.random.seed(seed)
+    # Use a local RNG. `np.random.seed(...)` would mutate NumPy's global
+    # state and leak reproducibility coupling into any downstream code
+    # that draws from NumPy afterwards.
+    rng = np.random.default_rng(seed)
     terrain = np.zeros(shape)
 
     # Add layers of noise (octaves)
@@ -76,7 +79,7 @@ def generate_fractal_terrain(
         amp = persistence**i
 
         # Generate random noise grid
-        noise = np.random.normal(0, 1, shape)
+        noise = rng.normal(0, 1, shape)
 
         # Smooth it to create correlation (Cheap Perlin proxy via Gaussian)
         # Higher frequency = smaller sigma (rougher features)

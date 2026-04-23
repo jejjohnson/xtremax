@@ -42,6 +42,35 @@ class TestGEVD:
         lp = dist.log_prob(samples)
         assert jnp.all(jnp.isfinite(lp))
 
+    def test_support_reflects_shape_dependent_bounds(self):
+        """Regression: GEVD declared `support = constraints.real` for all
+        shapes, but the true support depends on ξ: [μ-σ/ξ, ∞) when ξ>0,
+        (-∞, μ-σ/ξ] when ξ<0, the real line only when ξ=0. Now the
+        constraint reflects the actual shape-dependent support.
+        """
+        # ξ > 0: Fréchet branch, lower-bounded at μ - σ/ξ
+        d_pos = GeneralizedExtremeValueDistribution(
+            loc=0.0, scale=1.0, concentration=0.2
+        )
+        lower = float(d_pos.lower_bound())  # -5
+        assert bool(d_pos.support(jnp.array(lower + 1.0)))
+        assert not bool(d_pos.support(jnp.array(lower - 1.0)))
+
+        # ξ < 0: Weibull branch, upper-bounded at μ - σ/ξ
+        d_neg = GeneralizedExtremeValueDistribution(
+            loc=0.0, scale=1.0, concentration=-0.2
+        )
+        upper = float(d_neg.upper_bound())  # 5
+        assert bool(d_neg.support(jnp.array(upper - 1.0)))
+        assert not bool(d_neg.support(jnp.array(upper + 1.0)))
+
+        # ξ = 0: Gumbel branch, unbounded real line
+        d_gumbel = GeneralizedExtremeValueDistribution(
+            loc=0.0, scale=1.0, concentration=0.0
+        )
+        assert bool(d_gumbel.support(jnp.array(-1e6)))
+        assert bool(d_gumbel.support(jnp.array(1e6)))
+
     def test_mean_excess_varies_with_threshold_at_gumbel_limit(self):
         """Regression: GEVD mean excess used the GPD linear POT
         approximation `(σ + ξ(u-μ))/(1-ξ)`, which collapses to a constant
@@ -122,6 +151,31 @@ class TestGPD:
         expected_gumbel = float(jnp.log(scale) + 1.0 + euler_gamma)
         assert jnp.allclose(d_gumbel.entropy(), expected_gumbel, atol=1e-5)
         assert jnp.allclose(d_tiny.entropy(), d_gumbel.entropy(), atol=1e-6)
+
+    def test_support_rejects_above_upper_bound_when_shape_negative(self):
+        """Regression: GPD declared `support = constraints.nonnegative` for
+        all shapes, but when ξ<0 the support is `[0, -σ/ξ]`. A sample
+        above the finite upper endpoint is outside the domain and must be
+        rejected by the support constraint (so `validate_args=True` does
+        its job instead of deferring to log_prob → -∞).
+        """
+        d = GeneralizedParetoDistribution(scale=1.0, shape=-0.5)
+        upper = float(d.upper_bound())  # = 2.0
+        # Within support
+        assert bool(d.support(jnp.array(1.0)))
+        # Above the finite upper endpoint
+        assert not bool(d.support(jnp.array(upper + 0.1)))
+        # Below the lower bound (x < 0)
+        assert not bool(d.support(jnp.array(-0.1)))
+
+    def test_support_accepts_all_nonnegative_when_shape_positive(self):
+        """For ξ ≥ 0 the support is [0, +∞), so any nonnegative x must
+        be accepted (no upper-bound leakage from the constraint change).
+        """
+        d = GeneralizedParetoDistribution(scale=1.0, shape=0.2)
+        assert bool(d.support(jnp.array(0.5)))
+        assert bool(d.support(jnp.array(1e6)))
+        assert not bool(d.support(jnp.array(-0.1)))
 
     def test_expand_preserves_state(self):
         """Regression: the custom GPD.expand() override called

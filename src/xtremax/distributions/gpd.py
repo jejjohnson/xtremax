@@ -184,11 +184,17 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Return the support constraint for GPD.
 
         Returns:
-            Constraint object:
+            Constraint object reflecting the shape-dependent support:
             - ξ ≥ 0: [0, +∞)
             - ξ < 0: [0, -σ/ξ]
+
+        ``constraints.interval(0, upper_bound)`` resolves to nonnegative
+        semantics when the upper bound is +∞ (ξ ≥ 0) and to a proper
+        bounded interval when ξ < 0 — so ``validate_args=True`` actually
+        rejects samples above the finite upper endpoint instead of
+        silently deferring to ``log_prob`` returning -∞.
         """
-        return constraints.nonnegative
+        return constraints.interval(jnp.zeros_like(self.scale), self.upper_bound())
 
     def upper_bound(self) -> jnp.ndarray:
         """
@@ -199,7 +205,13 @@ class GeneralizedParetoDistribution(dist.Distribution):
             - ξ ≥ 0: +∞
             - ξ < 0: -σ/ξ
         """
-        return jnp.where(self.shape < 0, -self.scale / self.shape, jnp.inf)
+        scale = jnp.asarray(self.scale)
+        shape = jnp.asarray(self.shape)
+        # Replace ξ=0 with a safe placeholder inside the division so Python
+        # scalars don't raise ZeroDivisionError before jnp.where selects
+        # the +∞ branch.
+        safe_shape = jnp.where(shape == 0.0, 1.0, shape)
+        return jnp.where(shape < 0, -scale / safe_shape, jnp.inf)
 
     def lower_bound(self) -> jnp.ndarray:
         """

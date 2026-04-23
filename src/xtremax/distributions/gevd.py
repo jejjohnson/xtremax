@@ -190,12 +190,18 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         Return the support of the distribution.
 
         Returns:
-            Constraint object representing the support:
+            Constraint object reflecting the shape-dependent support:
             - ξ > 0: [μ - σ/ξ, +∞)
             - ξ = 0: (-∞, +∞)
             - ξ < 0: (-∞, μ - σ/ξ]
+
+        ``constraints.interval(lower_bound, upper_bound)`` resolves to
+        the unbounded real line when both bounds are ±∞ (ξ = 0) and to
+        the correct half-bounded interval otherwise — so
+        ``validate_args=True`` actually rejects samples outside the
+        true support instead of letting ``log_prob`` return -∞.
         """
-        return constraints.real
+        return constraints.interval(self.lower_bound(), self.upper_bound())
 
     def upper_bound(self) -> jnp.ndarray:
         """
@@ -204,9 +210,16 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         Returns:
             Upper bound: μ - σ/ξ for ξ < 0, +∞ otherwise
         """
-        return jnp.where(
-            self.concentration < 0, self.loc - self.scale / self.concentration, jnp.inf
-        )
+        loc = jnp.asarray(self.loc)
+        scale = jnp.asarray(self.scale)
+        shape = jnp.asarray(self.concentration)
+        # Replace ξ=0 with a safe placeholder (1.0) inside the division
+        # so plain Python inputs don't raise `ZeroDivisionError` before
+        # `jnp.where` selects the +∞ branch. The non-finite branch value
+        # is masked out.
+        safe_shape = jnp.where(shape == 0.0, 1.0, shape)
+        bounded = loc - scale / safe_shape
+        return jnp.where(shape < 0, bounded, jnp.inf)
 
     def lower_bound(self) -> jnp.ndarray:
         """
@@ -215,9 +228,12 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         Returns:
             Lower bound: μ - σ/ξ for ξ > 0, -∞ otherwise
         """
-        return jnp.where(
-            self.concentration > 0, self.loc - self.scale / self.concentration, -jnp.inf
-        )
+        loc = jnp.asarray(self.loc)
+        scale = jnp.asarray(self.scale)
+        shape = jnp.asarray(self.concentration)
+        safe_shape = jnp.where(shape == 0.0, 1.0, shape)
+        bounded = loc - scale / safe_shape
+        return jnp.where(shape > 0, bounded, -jnp.inf)
 
     @property
     def mean(self) -> jnp.ndarray:

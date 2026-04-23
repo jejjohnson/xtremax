@@ -65,6 +65,29 @@ class TestSpatial:
         assert terrain.shape == (32, 32)
         assert np.all(np.isfinite(terrain))
 
+    def test_fractal_terrain_does_not_mutate_global_rng(self):
+        """Regression: `generate_fractal_terrain` called `np.random.seed(seed)`
+        at the top, which leaks reproducibility coupling into unrelated
+        NumPy random draws afterwards. With a local Generator the global
+        RNG state must be untouched.
+        """
+        # Capture a pre-call draw from the global RNG.
+        before = np.random.default_rng()  # local handle
+        np.random.seed(12345)
+        expected_after_global_draw = np.random.standard_normal(3)
+
+        # Re-seed the global RNG to a known state; then call the helper.
+        np.random.seed(12345)
+        _ = generate_fractal_terrain(shape=(16, 16), seed=999)
+        # If the helper had not mutated global state, drawing 3 values
+        # from the global RNG now should still match the pre-recorded draw.
+        actual_after_global_draw = np.random.standard_normal(3)
+        np.testing.assert_array_equal(
+            expected_after_global_draw, actual_after_global_draw
+        )
+        # Avoid unused-variable lint warning.
+        del before
+
 
 class TestExtremes:
     def test_spatial_field(self):

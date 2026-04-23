@@ -127,6 +127,23 @@ class TestThreshold:
         # seasonal threshold returns one value per season
         assert "season" in u.dims or "time" in u.dims
 
+    def test_seasonal_respects_custom_time_dim(self):
+        """Regression: `seasonal_threshold` hard-coded `groupby="time.season"`,
+        so datasets whose temporal axis is not named `time` (e.g. `date`)
+        raised KeyError despite the API advertising a `time_dim` argument.
+        The grouping key must be derived from `time_dim`.
+        """
+        rng = np.random.default_rng(0)
+        dates = pd.date_range("2000-01-01", periods=365 * 2, freq="D")
+        da = xr.DataArray(
+            rng.standard_normal(len(dates)),
+            dims="date",
+            coords={"date": dates},
+        )
+        u = seasonal_threshold(da, 0.95, time_dim="date")
+        # Success: call didn't raise; output has a season coord or axis.
+        assert "season" in u.dims or "season" in u.coords
+
 
 class TestDecluster:
     def test_runs(self, daily_series):

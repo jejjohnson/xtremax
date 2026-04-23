@@ -267,4 +267,10 @@ def seasonal_threshold(
     temporal_threshold : More flexible temporal grouping
     rolling_threshold : Smooth rolling window threshold
     """
-    return temporal_threshold(da, quantile, groupby="time.season", time_dim=time_dim)
+    # Derive the groupby key from `time_dim` instead of hard-coding
+    # "time.season"; otherwise datasets whose temporal axis is named
+    # something else (e.g. "date") fail despite the API claiming support
+    # via the `time_dim` argument.
+    return temporal_threshold(
+        da, quantile, groupby=f"{time_dim}.season", time_dim=time_dim
+    )
