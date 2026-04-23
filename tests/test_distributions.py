@@ -42,6 +42,30 @@ class TestGEVD:
         lp = dist.log_prob(samples)
         assert jnp.all(jnp.isfinite(lp))
 
+    def test_mean_excess_varies_with_threshold_at_gumbel_limit(self):
+        """Regression: GEVD mean excess used the GPD linear POT
+        approximation `(σ + ξ(u-μ))/(1-ξ)`, which collapses to a constant
+        `σ` for every threshold when ξ=0 — even though the true Gumbel
+        mean excess depends on u and only asymptotes to σ in the far tail.
+        """
+        from xtremax.distributions import GumbelType1GEVD
+
+        gev0 = GeneralizedExtremeValueDistribution(
+            loc=0.0, scale=1.0, concentration=0.0
+        )
+        gumbel_ref = GumbelType1GEVD(loc=0.0, scale=1.0)
+        thresholds = jnp.array([0.0, 1.0, 3.0, 5.0])
+        me_gev = gev0.conditional_excess_mean(thresholds)
+        me_gumbel = gumbel_ref.conditional_excess_mean(thresholds)
+        # Must match the independently-implemented Gumbel quadrature
+        # (reviewed / corrected in an earlier round).
+        assert jnp.allclose(me_gev, me_gumbel, atol=1e-2)
+        # Must not be constant = scale.
+        assert float(jnp.std(me_gev)) > 0.05
+        # At u=0 mean excess is well above σ; at u=5 it's close to σ.
+        assert float(me_gev[0]) > 1.1
+        assert abs(float(me_gev[2]) - 1.0) < 0.05
+
     def test_mode_matches_argmax_of_pdf(self):
         """Regression: the non-Gumbel mode used `(1+ξ)^ξ` with the wrong
         exponent sign. The correct stationary point is `(1+ξ)^(-ξ)`.
@@ -236,6 +260,24 @@ class TestGumbel:
         for i, u in enumerate(thresholds):
             assert jnp.allclose(m[i], d.conditional_excess_mean(u), atol=1e-4)
 
+    def test_characteristic_function_handles_complex_gamma(self):
+        """Regression: characteristic_function called `jax.scipy.special.gammaln`
+        on a complex argument `1 - iσt`. `gammaln` is real-only, so the
+        method either failed or returned wrong values. Now delegated to
+        `scipy.special.loggamma` via `jax.pure_callback`.
+        """
+        d = GumbelType1GEVD(loc=0.5, scale=1.5)
+        t = jnp.array([0.0, 0.5, 1.0, 2.0], dtype=jnp.float32)
+        phi = d.characteristic_function(t)
+        # φ(0) = 1.
+        assert jnp.allclose(phi[0], 1.0 + 0.0j, atol=1e-5)
+        # |φ(t)| ≤ 1 for any characteristic function.
+        magnitudes = jnp.abs(phi)
+        assert jnp.all(magnitudes <= 1.0 + 1e-4)
+        # φ(-t) = conj(φ(t)) for real-valued X.
+        phi_neg = d.characteristic_function(-t)
+        assert jnp.allclose(phi_neg, jnp.conj(phi), atol=1e-4)
+
     def test_log_survival_upper_tail_asymptote(self):
         """Regression: the z > 5 branch returned ≈ -exp(-z), not ≈ -z.
 
@@ -296,6 +338,20 @@ class TestFrechet:
         expected = float(jnp.log(scale) + 1.0 + euler_gamma * (1.0 + shape))
         assert jnp.allclose(d.entropy(), expected, atol=1e-6)
 
+    def test_mean_excess_varies_with_threshold(self):
+        """Regression: Fréchet mean excess used the GPD linear POT form,
+        which is only the asymptotic limit. The quantile-space quadrature
+        now returns threshold-dependent values that grow sub-linearly with
+        u in the heavy-tail regime (ξ > 0).
+        """
+        d = FrechetType2GEVD(loc=0.0, scale=1.0, shape=0.3)
+        thresholds = jnp.array([0.0, 1.0, 2.0, 5.0])
+        me = d.conditional_excess_mean(thresholds)
+        # Monotonically increasing with threshold (heavier tail).
+        assert bool(jnp.all(jnp.diff(me) > 0.0))
+        # All finite for ξ < 1.
+        assert bool(jnp.all(jnp.isfinite(me)))
+
 
 class TestWeibull:
     def test_log_prob_and_sample_shape(self, key):
@@ -310,6 +366,24 @@ class TestWeibull:
         d = WeibullType3GEVD(0.0, 1.0, -0.3)
         r = d.percentile_residual_life(jnp.array(-1.0), percentile=0.0)
         assert jnp.allclose(r, 0.0, atol=1e-5)
+
+    def test_mean_excess_decays_to_zero_near_upper_bound(self):
+        """Regression: Weibull mean excess used the GPD linear POT form,
+        which does NOT vanish as the threshold approaches the finite
+        upper endpoint μ - σ/ξ. Quantile-space quadrature correctly
+        returns values tending to zero as u → upper bound (and NaN once
+        F(u) ≥ 1 - 1e-6, beyond the quadrature's float32 reach).
+        """
+        d = WeibullType3GEVD(loc=0.0, scale=1.0, shape=-0.3)
+        ub = float(d.upper_bound())
+        thresholds = jnp.array([ub * 0.3, ub * 0.6, ub * 0.9, ub * 0.95])
+        me = d.conditional_excess_mean(thresholds)
+        # All values must be finite in this range.
+        assert bool(jnp.all(jnp.isfinite(me)))
+        # Monotonically decreasing toward the upper bound.
+        assert bool(jnp.all(jnp.diff(me) < 0.0))
+        # By u = 0.9 * upper_bound the mean excess is well below scale=1.
+        assert float(me[2]) < 0.15
 
     def test_entropy_matches_gev_formula(self):
         """Regression: Weibull entropy used `log σ + ξ + 1 + γξ`; the

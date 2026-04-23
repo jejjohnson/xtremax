@@ -438,32 +438,39 @@ class FrechetType2GEVD(dist.Distribution):
         return self.survival_function(threshold)
 
     def conditional_excess_mean(self, threshold: jnp.ndarray) -> jnp.ndarray:
+        r"""Mean excess :math:`E[X - u \mid X > u]` for Fréchet Type II GEVD.
+
+        Computed via quantile-space quadrature, same machinery as the
+        general GEV class. The previous GPD linear approximation
+        :math:`(\sigma + \xi(u - \mu)) / (1 - \xi)` is only the POT
+        asymptote, not the finite-threshold mean excess.
+
+        Returns NaN for :math:`\xi \ge 1` (heavy tails where the mean
+        does not exist).
         """
-        Compute the mean excess function: E[X - u | X > u].
+        threshold_arr = jnp.asarray(threshold)
+        shape = self.shape
 
-        For Fréchet Type II GEVD with ξ < 1:
-        E[X - u | X > u] = (σ + ξ(u - μ)) / (1 - ξ)
+        # See GEVD.conditional_excess_mean — eps=1e-6 is float32-safe.
+        eps = 1e-6
+        max_p = 1.0 - eps
+        n_grid = 1024
+        p0 = self.cdf(threshold_arr)
+        p0_safe = jnp.clip(p0, 0.0, max_p)
 
-        This is fundamental for understanding the expected exceedance
-        size in heavy-tailed distributions.
+        unit = jnp.linspace(0.0, 1.0, n_grid)
+        p0_exp = jnp.expand_dims(p0_safe, axis=-1)
+        p_grid = p0_exp * (1.0 - unit) + max_p * unit
 
-        Args:
-            threshold: Threshold value u
+        x_grid = self.icdf(p_grid)
+        integral = jnp.trapezoid(x_grid, x=p_grid, axis=-1)
+        mass = max_p - p0_safe
+        mean_conditional = integral / jnp.where(mass > 1e-15, mass, 1.0)
+        mean_excess = mean_conditional - threshold_arr
 
-        Returns:
-            Conditional excess mean values
-        """
-        loc, scale, shape = self.loc, self.scale, self.shape
-
-        # Only valid for ξ < 1 and threshold above lower bound
         mean_exists = shape < 1.0
-        above_lower_bound = threshold >= self.lower_bound()
-        valid = mean_exists & above_lower_bound
-
-        # Mean excess formula for GEVD
-        excess_mean = (scale + shape * (threshold - loc)) / (1.0 - shape)
-
-        return jnp.where(valid, excess_mean, jnp.inf)
+        valid = mean_exists & (mass > 1e-15)
+        return jnp.where(valid, mean_excess, jnp.nan)
 
     def hill_estimator_threshold(self, quantile: float = 0.95) -> jnp.ndarray:
         """

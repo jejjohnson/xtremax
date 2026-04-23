@@ -8,8 +8,11 @@ extreme value modeling, particularly suited for classical meteorological applica
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
+import numpy as np
 import numpyro.distributions as dist
+import scipy.special as _sp_special
 from jax import lax
 from jax.scipy.special import gammaln
 from numpyro.distributions import constraints
@@ -23,6 +26,17 @@ from xtremax.primitives.gumbel import (
     gumbel_mean,
     gumbel_return_level,
 )
+
+
+def _host_complex_loggamma(z: np.ndarray) -> np.ndarray:
+    """Complex-valued log-gamma on host via SciPy.
+
+    ``jax.scipy.special.gammaln`` is real-only, so the characteristic
+    function cannot use it for the complex argument ``1 - iσt``. We hop
+    to SciPy via ``jax.pure_callback`` instead — accurate and covers
+    both complex64 and complex128 inputs.
+    """
+    return np.asarray(_sp_special.loggamma(z), dtype=z.dtype)
 
 
 class GumbelType1GEVD(dist.Distribution):
@@ -497,6 +511,11 @@ class GumbelType1GEVD(dist.Distribution):
         For Gumbel Type I:
         φ(t) = exp(iμt) * Γ(1 - iσt)
 
+        ``jax.scipy.special.gammaln`` is real-only, so the complex argument
+        ``1 - iσt`` is evaluated via ``jax.pure_callback`` to
+        ``scipy.special.loggamma``. This is host-hop but numerically
+        correct — a naive JAX call would have failed or returned garbage.
+
         Args:
             t: Real values at which to evaluate the characteristic function
 
@@ -504,13 +523,17 @@ class GumbelType1GEVD(dist.Distribution):
             Complex-valued characteristic function
         """
         loc, scale = self.loc, self.scale
+        t_arr = jnp.asarray(t)
+        scale_arr = jnp.asarray(scale)
+        loc_arr = jnp.asarray(loc)
 
-        # φ(t) = exp(iμt) * Γ(1 - iσt)
-        # Use the gamma function with complex argument
-        it = 1j * t
-        char_func = jnp.exp(1j * loc * t) * jnp.exp(gammaln(1.0 - scale * it))
-
-        return char_func
+        complex_arg = 1.0 - 1j * scale_arr * t_arr
+        log_gamma = jax.pure_callback(
+            _host_complex_loggamma,
+            jax.ShapeDtypeStruct(complex_arg.shape, complex_arg.dtype),
+            complex_arg,
+        )
+        return jnp.exp(1j * loc_arr * t_arr) * jnp.exp(log_gamma)
 
     def gumbel_probability_paper_coordinates(
         self, value: jnp.ndarray
