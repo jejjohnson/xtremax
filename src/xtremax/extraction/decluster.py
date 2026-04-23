@@ -115,31 +115,48 @@ def decluster_separation(
     This method first identifies all local maxima above threshold,
     then iteratively removes peaks that are too close to larger peaks.
     """
-    # Identify local maxima above threshold
+    # Identify local maxima above threshold.
     exceedances = da > threshold
     is_peak = (da > da.shift({dim: 1})) & (da > da.shift({dim: -1})) & exceedances
 
-    # Peak positions along the original time axis — these are what
-    # `min_separation` is measured against (as time steps, per the docstring),
-    # not the index of a peak within the reduced peaks array.
-    peak_positions = np.flatnonzero(is_peak.values)
-    if peak_positions.size == 0:
-        return da.isel({dim: peak_positions})
+    def _select_separated_peaks_1d(
+        values: np.ndarray, peak_mask: np.ndarray
+    ) -> np.ndarray:
+        """Greedily pick peaks so retained maxima are ≥ min_separation apart.
 
-    peak_values = da.values[peak_positions]
+        Works purely in positional indices along the core axis, which is
+        what `min_separation` is defined against (time steps, not
+        elements of the filtered peak list).
+        """
+        peak_positions = np.flatnonzero(peak_mask)
+        selected = np.zeros_like(peak_mask, dtype=bool)
+        if peak_positions.size == 0:
+            return selected
+        peak_values = values[peak_positions]
+        order = np.argsort(peak_values)[::-1]
+        chosen: list[int] = []
+        for idx in peak_positions[order]:
+            pos = int(idx)
+            if all(abs(pos - s) >= min_separation for s in chosen):
+                chosen.append(pos)
+                selected[pos] = True
+        return selected
 
-    # Sort peaks by value (descending) and greedily keep peaks that are far
-    # enough, in original time steps, from every peak already selected.
-    order = np.argsort(peak_values)[::-1]
-    sorted_positions = peak_positions[order]
+    # `apply_ufunc` with core dim == `dim` vectorises the 1-D selector
+    # over any remaining batch dims (e.g. `site`), so each batch row
+    # gets its own separation-filtered peak set and peak indices stay
+    # valid positions along `dim`.
+    selected_mask = xr.apply_ufunc(
+        _select_separated_peaks_1d,
+        da,
+        is_peak,
+        input_core_dims=[[dim], [dim]],
+        output_core_dims=[[dim]],
+        vectorize=True,
+        output_dtypes=[bool],
+    )
 
-    selected_positions: list[int] = []
-    for pos in sorted_positions:
-        if all(abs(int(pos) - s) >= min_separation for s in selected_positions):
-            selected_positions.append(int(pos))
-
-    selected_positions.sort()
-    return da.isel({dim: np.asarray(selected_positions, dtype=int)})
+    return da.where(selected_mask, drop=True)
 
 
 def estimate_extremal_index(

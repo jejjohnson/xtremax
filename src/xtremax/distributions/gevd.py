@@ -368,35 +368,19 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         return jnp.where(skew_exists, result, jnp.inf)
 
     def entropy(self) -> jnp.ndarray:
-        """
-        Compute the differential entropy of the distribution.
+        r"""Differential entropy of the GEV distribution (in nats).
 
-        For ξ ≠ 0:
-            H = log(σ) + ξ + 1 + γ*ξ
+        For any :math:`\xi` (including the Gumbel limit),
 
-        For ξ = 0:
-            H = log(σ) + γ + 1
+        .. math:: H = \log\sigma + 1 + \gamma(1 + \xi)
 
-        where γ is the Euler-Mascheroni constant.
-
-        Returns:
-            Differential entropy in nats
+        where :math:`\gamma` is the Euler–Mascheroni constant. At
+        :math:`\xi = 0` this correctly reduces to :math:`\log\sigma + 1 + \gamma`
+        (the Gumbel entropy), so no separate branch is needed.
         """
         scale, shape = self.scale, self.concentration
         euler_gamma = 0.5772156649015329
-
-        is_gumbel = jnp.abs(shape) < self._gumbel_threshold
-
-        def gumbel_entropy():
-            return jnp.log(scale) + euler_gamma + 1.0
-
-        def gevd_entropy():
-            return jnp.log(scale) + shape + 1.0 + euler_gamma * shape
-
-        entropy_gumbel = gumbel_entropy()
-        entropy_gevd = gevd_entropy()
-
-        return jnp.where(is_gumbel, entropy_gumbel, entropy_gevd)
+        return jnp.log(scale) + 1.0 + euler_gamma * (1.0 + shape)
 
     def survival_function(self, value: jnp.ndarray) -> jnp.ndarray:
         """

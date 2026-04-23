@@ -112,6 +112,31 @@ class TestDecluster:
         assert out.sizes["time"] == 1
         assert float(out.values[0]) == 4.0
 
+    def test_separation_vectorises_over_extra_dims(self):
+        """Regression: `np.flatnonzero(is_peak.values)` used linear indices
+        across all dims, so for multi-D arrays positions didn't correspond
+        to offsets along `dim`. `apply_ufunc` now applies the 1-D
+        selector per batch row.
+        """
+        time = pd.date_range("2020-01-01", periods=30, freq="D")
+        # Two sites with different peak layouts; each has peaks at
+        # positions with differing separations.
+        values = np.zeros((30, 2), dtype=float)
+        values[5, 0], values[20, 0] = 5.0, 3.0  # 15 apart
+        values[10, 1], values[14, 1] = 4.0, 2.0  # 4 apart → one kept
+        da = xr.DataArray(
+            values,
+            dims=("time", "site"),
+            coords={"time": time, "site": [0, 1]},
+        )
+
+        out = decluster_separation(da, threshold=0.5, min_separation=10)
+
+        site0_vals = out.sel(site=0).dropna("time").values.tolist()
+        site1_vals = out.sel(site=1).dropna("time").values.tolist()
+        assert set(site0_vals) == {5.0, 3.0}  # both kept (15 apart)
+        assert set(site1_vals) == {4.0}  # only the larger (too close)
+
     def test_declustered_block_maxima_separation_applies_min_separation(self):
         """Regression: the `method='separation'` branch of
         declustered_block_maxima previously returned all peaks unchanged.

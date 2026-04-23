@@ -61,6 +61,26 @@ class TestGPD:
         r = d.percentile_residual_life(jnp.array(1.0), percentile=0.0)
         assert jnp.allclose(r, 0.0, atol=1e-5)
 
+    def test_entropy_matches_closed_form(self):
+        """Regression: the ξ≠0 branch used `log σ + 1 + ξ + γξ`; the
+        correct formula is `log σ + 1 + γ(1 + ξ)`.
+        """
+        scale, xi = 2.0, 0.2
+        d = GeneralizedExtremeValueDistribution(0.0, scale, xi)
+        euler_gamma = 0.5772156649015329
+        expected = float(jnp.log(scale) + 1.0 + euler_gamma * (1.0 + xi))
+        assert jnp.allclose(d.entropy(), expected, atol=1e-5)
+
+    def test_entropy_continuous_at_shape_zero(self):
+        """Entropy should not jump at ξ=0 (Gumbel limit is the same formula)."""
+        scale = 2.0
+        euler_gamma = 0.5772156649015329
+        d_gumbel = GeneralizedExtremeValueDistribution(0.0, scale, 0.0)
+        d_tiny = GeneralizedExtremeValueDistribution(0.0, scale, 1e-8)
+        expected_gumbel = float(jnp.log(scale) + 1.0 + euler_gamma)
+        assert jnp.allclose(d_gumbel.entropy(), expected_gumbel, atol=1e-5)
+        assert jnp.allclose(d_tiny.entropy(), d_gumbel.entropy(), atol=1e-6)
+
     def test_survival_uses_scale_not_shape(self):
         """Regression: survival_function previously aliased `scale = self.shape`.
 
@@ -125,6 +145,20 @@ class TestGumbel:
         d = GumbelType1GEVD(loc=0.0, scale=scale)
         m = d.conditional_excess_mean(jnp.array(20.0))
         assert jnp.allclose(m, scale, atol=5e-3)
+
+    def test_conditional_excess_mean_vectorizes_over_thresholds(self):
+        """Regression: the trapezoidal integration previously collapsed on
+        vector thresholds because the grid axis collided with the batch
+        axis. Passing an array of thresholds must now broadcast cleanly.
+        """
+        d = GumbelType1GEVD(loc=0.0, scale=1.0)
+        thresholds = jnp.array([0.0, 1.0, 5.0, 10.0])
+        m = d.conditional_excess_mean(thresholds)
+        assert m.shape == thresholds.shape
+        assert jnp.all(jnp.isfinite(m))
+        # Each element must match the corresponding scalar call.
+        for i, u in enumerate(thresholds):
+            assert jnp.allclose(m[i], d.conditional_excess_mean(u), atol=1e-4)
 
     def test_log_survival_upper_tail_asymptote(self):
         """Regression: the z > 5 branch returned ≈ -exp(-z), not ≈ -z.

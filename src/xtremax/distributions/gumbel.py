@@ -404,19 +404,28 @@ class GumbelType1GEVD(dist.Distribution):
         .. math:: E[X - u \mid X > u] \, S(u) = \int_u^\infty S(x)\,dx
 
         via a trapezoidal quadrature over a grid from ``u`` to ``u + 50σ``
-        (well past the Gumbel tail). The previous closed form
-        ``σ·(exp(-z_u) + γ)`` had the wrong upper-tail limit
-        (``γσ`` instead of ``σ``).
+        (well past the Gumbel tail). Works for scalar, batched, and
+        broadcasted ``threshold`` / ``scale`` — the grid axis is always
+        placed last so trapezoidal integration stays on the quadrature
+        axis rather than the batch axis.
 
         Returns ``NaN`` where the survival probability is effectively zero.
         """
-        scale = self.scale
-        # 1024 points from 0 to 50σ is overkill for Gumbel but cheap.
-        offsets = jnp.linspace(0.0, 50.0, 1024) * scale
-        grid = threshold + offsets
+        scale_arr = jnp.asarray(self.scale)
+        threshold_arr = jnp.asarray(threshold)
+
+        # Put the integration grid on a new trailing axis so batch dims
+        # (if any) come first. `expand_dims(..., axis=-1)` turns shape
+        # `()` into `(1,)` and `(B,)` into `(B, 1)`, letting the
+        # `(N,)` grid broadcast without collisions.
+        unit = jnp.linspace(0.0, 50.0, 1024)
+        offsets = unit * jnp.expand_dims(scale_arr, axis=-1)
+        grid = jnp.expand_dims(threshold_arr, axis=-1) + offsets
+
         integrand = self.survival_function(grid)
-        integral = jnp.trapezoid(integrand, x=offsets)
-        survival_u = self.survival_function(threshold)
+        # Integrate along the grid axis explicitly.
+        integral = jnp.trapezoid(integrand, x=offsets, axis=-1)
+        survival_u = self.survival_function(threshold_arr)
         return jnp.where(survival_u > 1e-15, integral / survival_u, jnp.nan)
 
     def median(self) -> jnp.ndarray:
