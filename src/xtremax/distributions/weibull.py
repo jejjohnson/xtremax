@@ -15,6 +15,7 @@ from jax.scipy.special import gammaln
 from numpyro.distributions import constraints
 from numpyro.distributions.util import promote_shapes, validate_sample
 
+from xtremax._rng import check_prng_key
 from xtremax.primitives.weibull import (
     weibull_cdf,
     weibull_icdf,
@@ -143,7 +144,7 @@ class WeibullType3GEVD(dist.Distribution):
         Returns:
             Array of samples from the Weibull Type III GEVD, all bounded above
         """
-        assert not jnp.issubdtype(key.dtype, jnp.integer)
+        check_prng_key(key)
         shape = sample_shape + self.batch_shape
 
         # Generate uniform random variables U ~ Uniform(0,1)

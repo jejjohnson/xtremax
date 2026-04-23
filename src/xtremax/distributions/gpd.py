@@ -14,6 +14,7 @@ from jax import lax
 from numpyro.distributions import constraints
 from numpyro.distributions.util import promote_shapes, validate_sample
 
+from xtremax._rng import check_prng_key
 from xtremax.primitives.gpd import (
     gpd_cdf,
     gpd_icdf,
@@ -155,7 +156,7 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Array of samples from the GPD (all within support)
         """
-        assert not jnp.issubdtype(key.dtype, jnp.integer)
+        check_prng_key(key)
         shape = sample_shape + self.batch_shape
 
         # Generate uniform random variables U ~ Uniform(0,1)

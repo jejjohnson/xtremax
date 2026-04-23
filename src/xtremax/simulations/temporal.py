@@ -18,7 +18,6 @@ where :math:`F(t) = F_\\mathrm{ghg}(t) + F_\\mathrm{solar}(t) + F_\\mathrm{volc}
 
 from __future__ import annotations
 
-import warnings
 from typing import Literal
 
 import numpy as np
@@ -26,8 +25,6 @@ import xarray as xr
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d
 
-
-warnings.simplefilter(action="ignore", category=FutureWarning)
 
 # ==============================================================================
 # 1. TEMPORAL MODULE: GMST & TREND GENERATION
@@ -47,7 +44,7 @@ def generate_gmst_trajectory(
     Args:
         trend_type: Shape of the warming curve.
     """
-    np.random.seed(seed)
+    rng = np.random.default_rng(seed)
     years = np.arange(start_year, start_year + n_years)
     t = np.linspace(0, 1, n_years)  # Normalized time 0 to 1
 
@@ -64,7 +61,7 @@ def generate_gmst_trajectory(
 
     # Add AR(1) red noise to mimic internal climate variability
     noise = np.zeros(n_years)
-    epsilon = np.random.normal(0, noise_std, n_years)
+    epsilon = rng.normal(0, noise_std, n_years)
     alpha = 0.6  # Autocorrelation factor
 
     noise[0] = epsilon[0]
@@ -118,7 +115,7 @@ def generate_physical_gmst(
     Returns:
         xr.Dataset containing Temperature, Total Forcing, and Components.
     """
-    np.random.seed(seed)
+    rng = np.random.default_rng(seed)
 
     # --------------------------------------------------------------------------
     # 1. Physics Constants & Setup
@@ -151,10 +148,8 @@ def generate_physical_gmst(
     # C. Volcanic Eruptions (Stochastic Spikes)
     #    modeled as discrete negative impulses decaying exponentially
     n_eruptions = int(n_years / 10)  # Approx 1 per decade
-    eruption_times = np.sort(np.random.uniform(5, n_years - 5, n_eruptions))
-    eruption_magnitudes = np.random.gamma(
-        shape=2.0, scale=1.5, size=n_eruptions
-    )  # W/m2
+    eruption_times = np.sort(rng.uniform(5, n_years - 5, n_eruptions))
+    eruption_magnitudes = rng.gamma(shape=2.0, scale=1.5, size=n_eruptions)  # W/m2
 
     def forcing_volcano(t):
         val = 0.0
@@ -174,7 +169,7 @@ def generate_physical_gmst(
     noise_dt = 0.1  # High res noise generation
     noise_steps = int(n_years / noise_dt)
     noise_t = np.linspace(0, n_years, noise_steps)
-    white_noise = np.random.normal(0, 0.2, size=noise_steps)
+    white_noise = rng.normal(0, 0.2, size=noise_steps)
 
     # Generate Red Noise (AR1)
     red_noise = np.zeros_like(white_noise)
@@ -206,13 +201,12 @@ def generate_physical_gmst(
         F_total = F_g + F_s + F_v + F_n
 
         dT_dt = (F_total - lam * T) / ocean_heat_capacity
-        return dT_dt
+        # solve_ivp expects an array-like of the same shape as y (length 1).
+        return [dT_dt]
 
     # Initial Condition: Start at equilibrium (0 anomaly)
     y0 = [0.0]
 
-    # Solve
-    print(f"Solving EBM ODE over {n_years} years...")
     sol = solve_ivp(
         system_dynamics, t_span=(0, n_years), y0=y0, t_eval=t_eval, method="RK45"
     )

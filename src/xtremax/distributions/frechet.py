@@ -15,6 +15,7 @@ from jax.scipy.special import gammaln
 from numpyro.distributions import constraints
 from numpyro.distributions.util import promote_shapes, validate_sample
 
+from xtremax._rng import check_prng_key
 from xtremax.primitives.frechet import (
     frechet_cdf,
     frechet_icdf,
@@ -151,7 +152,7 @@ class FrechetType2GEVD(dist.Distribution):
         Returns:
             Array of samples from the Fréchet Type II GEVD, all above lower bound
         """
-        assert not jnp.issubdtype(key.dtype, jnp.integer)
+        check_prng_key(key)
         shape = sample_shape + self.batch_shape
 
         # Generate uniform random variables U ~ Uniform(0,1)

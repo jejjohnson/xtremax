@@ -11,6 +11,7 @@ from xtremax.extraction import (
     constant_threshold,
     decluster_runs,
     decluster_separation,
+    declustered_block_maxima,
     quantile_threshold,
     rolling_threshold,
     seasonal_threshold,
@@ -97,6 +98,23 @@ class TestDecluster:
 
         assert out.sizes["time"] == 1
         assert float(out.values[0]) == 4.0
+
+    def test_declustered_block_maxima_separation_applies_min_separation(self):
+        """Regression: the `method='separation'` branch of
+        declustered_block_maxima previously returned all peaks unchanged.
+        It must now enforce min_separation (via decluster_separation).
+        """
+        values = np.zeros(40, dtype=float)
+        values[10], values[25], values[30] = 5.0, 4.0, 3.0
+        time = pd.date_range("2020-01-01", periods=40, freq="D")
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+
+        out = declustered_block_maxima(
+            da, threshold=0.5, min_separation=10, method="separation"
+        )
+
+        assert out.sizes["time"] == 2
+        assert set(out.values.tolist()) == {5.0, 4.0}
 
 
 # Quantile-regression threshold selection needs scikit-learn (optional

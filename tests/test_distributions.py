@@ -96,6 +96,17 @@ class TestGumbel:
         h = d.hazard_rate(x_far)
         assert jnp.allclose(h, 1.0 / scale, atol=1e-5)
 
+    def test_conditional_excess_mean_uses_survival_not_cdf(self):
+        """Regression: survival_u was previously `exp(-exp(-z_u))` (the CDF).
+
+        With loc=0, scale=1, threshold=-2 we have F(-2) ≈ 5.7e-4 but
+        S(-2) ≈ 0.9994. The bug returned NaN at low thresholds where the
+        CDF is tiny; the fix should return a finite mean excess.
+        """
+        d = GumbelType1GEVD(loc=0.0, scale=1.0)
+        m = d.conditional_excess_mean(jnp.array(-2.0))
+        assert jnp.isfinite(m)
+
 
 class TestFrechet:
     def test_log_prob_and_sample_shape(self, key):
@@ -113,3 +124,18 @@ class TestWeibull:
         assert samples.shape == (32,)
         lp = dist.log_prob(samples)
         assert jnp.all(jnp.isfinite(lp))
+
+
+class TestPRNGKeyValidation:
+    """sample() must raise TypeError (not AssertionError) on bad keys."""
+
+    def test_rejects_non_key_with_typeerror(self):
+        d = GumbelType1GEVD(loc=0.0, scale=1.0)
+        with pytest.raises(TypeError, match="JAX PRNG key"):
+            d.sample(42, sample_shape=(4,))  # plain int, not a key
+
+    def test_accepts_legacy_prngkey(self):
+        d = GumbelType1GEVD(loc=0.0, scale=1.0)
+        legacy = jax.random.PRNGKey(0)
+        samples = d.sample(legacy, sample_shape=(4,))
+        assert samples.shape == (4,)

@@ -74,7 +74,7 @@ class XarrayQuantileRegressor(BaseEstimator, RegressorMixin):
 
     # -- sklearn API --------------------------------------------------------
 
-    def fit(self, X: xr.DataArray, y: xr.DataArray):
+    def fit(self, X: xr.DataArray, y: xr.DataArray) -> XarrayQuantileRegressor:
         """Fit the quantile regression model.
 
         Parameters

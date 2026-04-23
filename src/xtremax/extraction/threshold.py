@@ -41,7 +41,9 @@ def constant_threshold(da: xr.DataArray, threshold: float) -> float:
 
 
 def quantile_threshold(
-    da: xr.DataArray, quantile: float, dim: Hashable | Sequence[Hashable] = None
+    da: xr.DataArray,
+    quantile: float,
+    dim: Hashable | Sequence[Hashable] | None = None,
 ) -> float | xr.DataArray:
     """
     Calculate threshold based on a percentile of the data.

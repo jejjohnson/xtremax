@@ -15,6 +15,7 @@ from jax.scipy.special import gammaln
 from numpyro.distributions import constraints
 from numpyro.distributions.util import promote_shapes, validate_sample
 
+from xtremax._rng import check_prng_key
 from xtremax.primitives.gumbel import (
     gumbel_cdf,
     gumbel_icdf,
@@ -157,7 +158,7 @@ class GumbelType1GEVD(dist.Distribution):
         Returns:
             Array of samples from the Gumbel distribution
         """
-        assert not jnp.issubdtype(key.dtype, jnp.integer)
+        check_prng_key(key)
         shape = sample_shape + self.batch_shape
 
         # Generate uniform random variables U ~ Uniform(0,1)
@@ -414,8 +415,9 @@ class GumbelType1GEVD(dist.Distribution):
         loc, scale = self.loc, self.scale
         z_u = (threshold - loc) / scale
 
-        # Survival function at threshold
-        survival_u = jnp.exp(-jnp.exp(-z_u))
+        # Survival = 1 - F(u) (not F(u) itself). Use -expm1 for stability
+        # across both tails.
+        survival_u = -jnp.expm1(-jnp.exp(-z_u))
 
         # For Gumbel, the mean excess can be computed as:
         # E[X - u | X > u] = σ * (exp(-z_u) + γ)

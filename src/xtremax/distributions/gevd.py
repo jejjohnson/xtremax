@@ -27,6 +27,7 @@ from xtremax.primitives.gev import (
 
 # Minimal scalar-or-array alias for broadcastable GEVD parameters.
 ArrayLike = float | jnp.ndarray
+from xtremax._rng import check_prng_key
 
 
 class GeneralizedExtremeValueDistribution(dist.Distribution):
@@ -161,7 +162,7 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         Returns:
             Array of samples from the GEVD
         """
-        assert not jnp.issubdtype(key.dtype, jnp.integer)
+        check_prng_key(key)
         shape = sample_shape + self.batch_shape
 
         # Generate uniform random variables U ~ Uniform(0,1)

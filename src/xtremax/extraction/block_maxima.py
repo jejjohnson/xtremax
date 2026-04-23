@@ -256,16 +256,13 @@ def declustered_block_maxima(
         return maxima
 
     elif method == "separation":
-        # Find local maxima above threshold
-        is_peak = (da > da.shift({dim: 1})) & (da > da.shift({dim: -1})) & exceedances
+        # Delegate to the separation-based declustering helper, which
+        # actually applies `min_separation` in units of original time steps.
+        from xtremax.extraction.decluster import decluster_separation
 
-        # Extract peak values and times
-        peak_values = da.where(is_peak, drop=True)
-
-        # Filter peaks to ensure minimum separation
-        # This is a placeholder - full implementation would need
-        # to iterate through time and enforce separation
-        return peak_values
+        return decluster_separation(
+            da, threshold=threshold, min_separation=min_separation, dim=dim
+        )
 
     else:
         raise ValueError(f"Unknown method: {method}. Use 'runs' or 'separation'")

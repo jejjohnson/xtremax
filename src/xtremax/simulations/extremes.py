@@ -7,14 +7,9 @@ GMST trajectory to produce Clausius-Clapeyron-scaled covariate response.
 
 from __future__ import annotations
 
-import warnings
-
 import numpy as np
 import xarray as xr
 from scipy.stats import genextreme, weibull_min
-
-
-warnings.simplefilter(action="ignore", category=FutureWarning)
 
 
 # ==============================================================================
@@ -33,18 +28,18 @@ def generate_spatial_field(
     Args:
         bounds: (lon_min, lon_max, lat_min, lat_max)
     """
-    np.random.seed(seed)
+    rng = np.random.default_rng(seed)
     lon_min, lon_max, lat_min, lat_max = bounds
 
     # Random spatial locations
-    lon = np.random.uniform(lon_min, lon_max, n_sites)
-    lat = np.random.uniform(lat_min, lat_max, n_sites)
+    lon = rng.uniform(lon_min, lon_max, n_sites)
+    lat = rng.uniform(lat_min, lat_max, n_sites)
 
     # Synthetic Elevation (correlated with distance from center for 'mountain' effect)
     # Simple heuristic: higher in the north/center
     center_lat = (lat_min + lat_max) / 2
     dist_factor = np.abs(lat - center_lat)
-    elevation = np.random.exponential(500, n_sites) + (dist_factor * 200)
+    elevation = rng.exponential(500, n_sites) + (dist_factor * 200)
     elevation = np.clip(elevation, 0, 3400)  # Clip to realistic max (Mulhacen approx)
 
     ds = xr.Dataset(
@@ -64,7 +59,10 @@ def generate_spatial_field(
 
 
 def compute_climate_signal(
-    spatial_ds: xr.Dataset, gmst_da: xr.DataArray, base_val: float, coeffs: dict
+    spatial_ds: xr.Dataset,
+    gmst_da: xr.DataArray,
+    base_val: float,
+    coeffs: dict[str, float],
 ) -> xr.DataArray:
     """
     Combines Spatial and Temporal fields to create a mean climate signal (Mu).
@@ -113,7 +111,6 @@ def simulate_temp_extremes(
         scale: Scale parameter (assumed constant here, but could be array).
         shape: Shape parameter (xi).
     """
-    np.random.seed(seed)
     shape_dim = mu.shape
 
     # Scipy uses shape 'c' where c = -xi (sign flip vs typical EVT notation).
@@ -124,7 +121,9 @@ def simulate_temp_extremes(
     # if xi < 0 (Weibull domain), scipy c > 0
     c = -shape
 
-    data = genextreme.rvs(c, loc=mu.values, scale=scale, size=shape_dim)
+    data = genextreme.rvs(
+        c, loc=mu.values, scale=scale, size=shape_dim, random_state=seed
+    )
 
     ds = mu.to_dataset(name="mu_tmax")
     ds["tmax"] = (("year", "site"), data)
@@ -140,9 +139,11 @@ def simulate_precip_extremes(
     1. Intensity (Rx1day): Gamma or GEV distribution.
     2. Duration (Consecutive Wet Days - CWD): Poisson/Geometric approach.
     """
-    np.random.seed(seed)
-    gmst_da.sizes["year"]
-    spatial_ds.sizes["site"]
+    if "year" not in gmst_da.sizes:
+        raise ValueError("gmst_da must include a 'year' dimension.")
+    if "site" not in spatial_ds.sizes:
+        raise ValueError("spatial_ds must include a 'site' dimension.")
+    rng = np.random.default_rng(seed)
 
     # --- A. Intensity (Rx1day - Annual Max Precip) ---
     # Physical intuition: Warmer air holds more moisture (Clausius-Clapeyron ~7%/K)
@@ -161,7 +162,7 @@ def simulate_precip_extremes(
     # Values must be broadcast manually for numpy sampling if using arrays
     # But Xarray math handles the broadcasting for parameters
     # We sample:
-    rx1day = np.random.gamma(
+    rx1day = rng.gamma(
         shape=gamma_shape,
         scale=gamma_scale.values.transpose(),  # (year, site)
     )
@@ -175,7 +176,7 @@ def simulate_precip_extremes(
     lambda_param = np.maximum(1.0, lambda_param)  # Ensure positive
 
     # Poisson for count data
-    cwd = np.random.poisson(lambda_param.values.transpose())
+    cwd = rng.poisson(lambda_param.values.transpose())
 
     ds = xr.Dataset(
         coords={"year": gmst_da.year, "site": spatial_ds.site},
@@ -196,8 +197,6 @@ def simulate_wind_extremes(
     """
     Simulates Extreme Wind Speeds (Gusts) using Weibull distribution.
     """
-    np.random.seed(seed)
-
     # Wind often higher at higher elevation and near coast (ignored coast for now)
     base_wind = 15.0 + 0.01 * spatial_ds["elevation"]  # m/s
 
@@ -213,7 +212,12 @@ def simulate_wind_extremes(
 
     # Sample
     # Scipy weibull_min takes 'c' as shape parameter
-    wind_max = weibull_min.rvs(c=k_shape, scale=w_scale_time.values.transpose(), loc=0)
+    wind_max = weibull_min.rvs(
+        c=k_shape,
+        scale=w_scale_time.values.transpose(),
+        loc=0,
+        random_state=seed,
+    )
 
     ds = xr.Dataset(
         coords={"year": gmst_da.year, "site": spatial_ds.site},
