@@ -514,24 +514,23 @@ class GeneralizedParetoDistribution(dist.Distribution):
             "theoretical_tail_index": self.tail_index(),
         }
 
-    def expand(
-        self, batch_shape: tuple, _instance: dist.Distribution | None = None
-    ) -> dist.Distribution:
-        """
-        Expand the distribution to a new batch shape.
+    def expand(self, batch_shape: tuple[int, ...]) -> dist.Distribution:
+        """Expand to ``batch_shape`` by reconstructing via ``__init__``.
 
-        Args:
-            batch_shape: New batch shape
-            _instance: Optional instance for type checking
-
-        Returns:
-            Expanded distribution instance
+        We deliberately go through the constructor so every cached
+        attribute set by ``__init__`` (e.g. ``_exponential_threshold``) is
+        present on the returned distribution. Bypassing ``__init__`` (as
+        an earlier version did) broke ``cdf``/``skew``/``kurtosis`` on
+        expanded instances.
         """
-        new = self._get_checked_instance(type(self), _instance)
-        batch_shape = lax.broadcast_shapes(self.batch_shape, batch_shape)
-        new.scale = jnp.broadcast_to(self.scale, batch_shape)
-        new.shape = jnp.broadcast_to(self.shape, batch_shape)
-        return new._validate_args(self._validate_args)
+        batch_shape = tuple(batch_shape)
+        if batch_shape == self.batch_shape:
+            return self
+        return type(self)(
+            scale=jnp.broadcast_to(self.scale, batch_shape),
+            shape=jnp.broadcast_to(self.shape, batch_shape),
+            validate_args=self._validate_args,
+        )
 
 
 # Convenient aliases

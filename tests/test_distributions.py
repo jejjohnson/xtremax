@@ -99,6 +99,23 @@ class TestGPD:
         assert jnp.allclose(d_gumbel.entropy(), expected_gumbel, atol=1e-5)
         assert jnp.allclose(d_tiny.entropy(), d_gumbel.entropy(), atol=1e-6)
 
+    def test_expand_preserves_state(self):
+        """Regression: the custom GPD.expand() override called
+        `_get_checked_instance` (which does not exist on the current
+        NumPyro Distribution) and bypassed __init__, so attributes like
+        ``_exponential_threshold`` were missing on the returned instance
+        and every cdf/skew/kurtosis call raised AttributeError. Rebuilding
+        via ``__init__`` restores all cached state.
+        """
+        d = GeneralizedParetoDistribution(scale=1.0, shape=0.2)
+        expanded = d.expand((3,))
+        assert expanded.batch_shape == (3,)
+        assert hasattr(expanded, "_exponential_threshold")
+        x = jnp.array([0.1, 0.5, 1.0])
+        _ = expanded.cdf(x)
+        _ = expanded.skew()
+        _ = expanded.kurtosis()
+
     def test_hazard_rate_zero_below_support(self):
         """Regression: GPD hazard_rate previously only checked `σ + ξx > 0`,
         so for `x < 0` (outside GPD support where f=0, S=1, h=0) it returned
@@ -137,6 +154,28 @@ class TestGumbel:
         assert samples.shape == (32,)
         lp = dist.log_prob(samples)
         assert jnp.all(jnp.isfinite(lp))
+
+    def test_expand_preserves_state(self):
+        """Regression: the custom Gumbel.expand() bypassed __init__ and
+        called a non-existent `_get_checked_instance`, losing cached
+        constants (`_pi_squared_over_six`, `_gumbel_skewness`,
+        `_gumbel_kurtosis`, `_euler_gamma`). Rebuilding via ``__init__``
+        keeps variance/skew/kurtosis/entropy reachable.
+        """
+        d = GumbelType1GEVD(loc=0.0, scale=1.0)
+        expanded = d.expand((4,))
+        assert expanded.batch_shape == (4,)
+        for attr in (
+            "_euler_gamma",
+            "_pi_squared_over_six",
+            "_gumbel_skewness",
+            "_gumbel_kurtosis",
+        ):
+            assert hasattr(expanded, attr), f"missing {attr}"
+        _ = expanded.variance
+        _ = expanded.skew
+        _ = expanded.kurtosis
+        _ = expanded.entropy()
 
     def test_hazard_rate_matches_f_over_S(self):
         """h(x) must equal f(x) / S(x), not exp(z)/σ."""
@@ -228,6 +267,25 @@ class TestFrechet:
         expected = jnp.log(1.0 - d.cdf(x))
         assert jnp.allclose(log_s, expected, atol=1e-5)
 
+    def test_mode_matches_argmax_of_pdf(self):
+        """Regression: Fréchet mode used `(1+ξ)^ξ` — the GEV-parameterisation
+        stationary point is `(1+ξ)^(-ξ)`. Verify by grid argmax of the pdf.
+        """
+        for shape in [0.1, 0.3, 0.5]:
+            d = FrechetType2GEVD(loc=0.0, scale=1.0, shape=shape)
+            # Support is x > μ - σ/ξ; for μ=0,σ=1 this is x > -1/ξ.
+            # The mode sits slightly below 0 for small ξ, slightly above
+            # for larger ξ, so scan a wide window inside the support.
+            lower = -1.0 / shape + 1e-4
+            grid = jnp.linspace(max(lower, -5.0), 10.0, 40001)
+            pdf = jnp.exp(d.log_prob(grid))
+            safe_pdf = jnp.where(jnp.isfinite(pdf), pdf, -1.0)
+            empirical = float(grid[jnp.argmax(safe_pdf)])
+            analytical = float(d.mode)
+            assert abs(empirical - analytical) < 5e-3, (
+                f"shape={shape}: empirical {empirical} vs analytical {analytical}"
+            )
+
     def test_entropy_matches_gev_formula(self):
         """Regression: Fréchet entropy used `log σ + ξ + 1 + γξ`; the
         correct GEV-branch entropy is `log σ + 1 + γ(1 + ξ)`.
@@ -252,6 +310,23 @@ class TestWeibull:
         d = WeibullType3GEVD(0.0, 1.0, -0.3)
         r = d.percentile_residual_life(jnp.array(-1.0), percentile=0.0)
         assert jnp.allclose(r, 0.0, atol=1e-5)
+
+    def test_mode_matches_argmax_of_pdf(self):
+        """Regression: Weibull Type III mode used `(1+ξ)^ξ` — the
+        GEV-parameterisation stationary point is `(1+ξ)^(-ξ)`.
+        """
+        for shape in [-0.3, -0.2, -0.1]:
+            d = WeibullType3GEVD(loc=0.0, scale=1.0, shape=shape)
+            # Support has upper bound μ - σ/ξ = 1/|ξ|; scan below it.
+            upper = -1.0 / shape
+            grid = jnp.linspace(upper - 10.0, upper - 1e-4, 20001)
+            pdf = jnp.exp(d.log_prob(grid))
+            safe_pdf = jnp.where(jnp.isfinite(pdf), pdf, -1.0)
+            empirical = float(grid[jnp.argmax(safe_pdf)])
+            analytical = float(d.mode)
+            assert abs(empirical - analytical) < 5e-3, (
+                f"shape={shape}: empirical {empirical} vs analytical {analytical}"
+            )
 
 
 class TestPRNGKeyValidation:

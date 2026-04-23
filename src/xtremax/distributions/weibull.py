@@ -211,7 +211,7 @@ class WeibullType3GEVD(dist.Distribution):
         Compute the mode of the Weibull Type III GEVD.
 
         The mode is:
-        mode = μ + (σ/ξ) * ((1+ξ)^ξ - 1)
+        mode = μ + (σ/ξ) * ((1+ξ)^(-ξ) - 1)
 
         Since ξ < 0, this represents the most likely value below the upper bound.
 
@@ -220,8 +220,8 @@ class WeibullType3GEVD(dist.Distribution):
         """
         loc, scale, shape = self.loc, self.scale, self.shape
 
-        # Mode formula: mode = μ + (σ/ξ) * ((1+ξ)^ξ - 1)
-        return loc + (scale / shape) * (jnp.power(1.0 + shape, shape) - 1.0)
+        # Mode formula: mode = μ + (σ/ξ) * ((1+ξ)^(-ξ) - 1)
+        return loc + (scale / shape) * (jnp.power(1.0 + shape, -shape) - 1.0)
 
     @property
     def variance(self) -> jnp.ndarray:
@@ -483,25 +483,17 @@ class WeibullType3GEVD(dist.Distribution):
         total_prob = 1.0 - (1.0 - percentile) * survival_prob
         return self.icdf(total_prob) - time
 
-    def expand(
-        self, batch_shape: tuple, _instance: dist.Distribution | None = None
-    ) -> dist.Distribution:
-        """
-        Expand the distribution to a new batch shape.
-
-        Args:
-            batch_shape: New batch shape
-            _instance: Optional instance for type checking
-
-        Returns:
-            Expanded distribution instance
-        """
-        new = self._get_checked_instance(type(self), _instance)
-        batch_shape = lax.broadcast_shapes(self.batch_shape, batch_shape)
-        new.loc = jnp.broadcast_to(self.loc, batch_shape)
-        new.scale = jnp.broadcast_to(self.scale, batch_shape)
-        new.shape = jnp.broadcast_to(self.shape, batch_shape)
-        return new._validate_args(self._validate_args)
+    def expand(self, batch_shape: tuple[int, ...]) -> dist.Distribution:
+        """Expand to ``batch_shape`` by reconstructing via ``__init__``."""
+        batch_shape = tuple(batch_shape)
+        if batch_shape == self.batch_shape:
+            return self
+        return type(self)(
+            loc=jnp.broadcast_to(self.loc, batch_shape),
+            scale=jnp.broadcast_to(self.scale, batch_shape),
+            shape=jnp.broadcast_to(self.shape, batch_shape),
+            validate_args=self._validate_args,
+        )
 
 
 # Convenient aliases

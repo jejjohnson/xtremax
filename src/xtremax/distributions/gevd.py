@@ -547,27 +547,22 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         total_prob = 1.0 - (1.0 - percentile) * survival_prob
         return self.icdf(total_prob) - time
 
-    def expand(
-        self, batch_shape: tuple, _instance: dist.Distribution | None = None
-    ) -> dist.Distribution:
-        """
-        Expand the distribution to a new batch shape.
+    def expand(self, batch_shape: tuple[int, ...]) -> dist.Distribution:
+        """Expand to ``batch_shape`` by reconstructing via ``__init__``.
 
-        Args:
-            batch_shape: New batch shape
-            _instance: Optional instance for type checking
-
-        Returns:
-            Expanded distribution instance
+        Going through the constructor repopulates ``_gumbel_threshold`` on
+        the returned instance so downstream methods that dispatch on it
+        (log_prob/cdf/icdf/mean/entropy) keep working after expansion.
         """
-        new = self._get_checked_instance(type(self), _instance)
-        batch_shape = lax.broadcast_shapes(self.batch_shape, batch_shape)
-        new.loc = jnp.broadcast_to(self.loc, batch_shape)
-        new.scale = jnp.broadcast_to(self.scale, batch_shape)
-        new.concentration = jnp.broadcast_to(self.concentration, batch_shape)
-        if hasattr(self, "_gumbel_threshold"):
-            new._gumbel_threshold = self._gumbel_threshold
-        return new._validate_args(self._validate_args)
+        batch_shape = tuple(batch_shape)
+        if batch_shape == self.batch_shape:
+            return self
+        return type(self)(
+            loc=jnp.broadcast_to(self.loc, batch_shape),
+            scale=jnp.broadcast_to(self.scale, batch_shape),
+            concentration=jnp.broadcast_to(self.concentration, batch_shape),
+            validate_args=self._validate_args,
+        )
 
 
 # Convenient alias for backward compatibility and shorter imports
