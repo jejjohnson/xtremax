@@ -8,10 +8,8 @@ import pytest
 import xarray as xr
 
 from xtremax.extraction import (
-    XarrayQuantileRegressor,
     constant_threshold,
     decluster_runs,
-    quantile_regression_threshold,
     quantile_threshold,
     rolling_threshold,
     seasonal_threshold,
@@ -63,6 +61,15 @@ class TestDecluster:
     def test_runs(self, daily_series):
         out = decluster_runs(daily_series, threshold=1.5, reduction="max")
         assert isinstance(out, xr.DataArray)
+
+
+# Quantile-regression threshold selection needs scikit-learn (optional
+# `[threshold]` extra). Skip when sklearn isn't installed.
+pytest.importorskip("sklearn")
+from xtremax.extraction.quantile_regression import (
+    XarrayQuantileRegressor,
+    quantile_regression_threshold,
+)
 
 
 class TestQuantileRegression:

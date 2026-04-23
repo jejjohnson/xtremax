@@ -18,10 +18,6 @@ from xtremax.extraction.decluster import (
     decluster_separation,
     estimate_extremal_index,
 )
-from xtremax.extraction.quantile_regression import (
-    XarrayQuantileRegressor,
-    quantile_regression_threshold,
-)
 from xtremax.extraction.threshold import (
     constant_threshold,
     quantile_threshold,
@@ -32,13 +28,11 @@ from xtremax.extraction.threshold import (
 
 
 __all__ = [
-    "XarrayQuantileRegressor",
     "constant_threshold",
     "decluster_runs",
     "decluster_separation",
     "declustered_block_maxima",
     "estimate_extremal_index",
-    "quantile_regression_threshold",
     "quantile_threshold",
     "r_largest_block_maxima",
     "rolling_threshold",
@@ -48,3 +42,16 @@ __all__ = [
     "temporal_block_maxima",
     "temporal_threshold",
 ]
+
+# Quantile-regression threshold selection needs scikit-learn, which is an
+# optional `[threshold]` extra. Only re-export when available so the core
+# `import xtremax` path works without sklearn installed.
+try:
+    from xtremax.extraction.quantile_regression import (
+        XarrayQuantileRegressor,
+        quantile_regression_threshold,
+    )
+except ImportError:
+    pass
+else:
+    __all__ += ["XarrayQuantileRegressor", "quantile_regression_threshold"]
