@@ -187,7 +187,7 @@ class FrechetType2GEVD(dist.Distribution):
             Constraint representing x ≥ μ - σ/ξ (lower bounded)
         """
         lower_bound = self.lower_bound()
-        return constraints.greater_than(lower_bound)
+        return constraints.interval(lower_bound, self.upper_bound())
 
     def upper_bound(self) -> jnp.ndarray:
         """

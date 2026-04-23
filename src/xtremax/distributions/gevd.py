@@ -252,6 +252,10 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         For ξ ≠ 0:
             mode = μ + (σ/ξ) * ((1+ξ)^(-ξ) - 1)
 
+        This interior stationary point only exists for ξ > -1. For
+        ξ ≤ -1 (Weibull branch), the density increases all the way to the
+        finite upper endpoint, so the mode is the upper bound itself.
+
         For ξ = 0:
             mode = μ
 
@@ -261,12 +265,18 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         loc, scale, shape = self.loc, self.scale, self.concentration
 
         is_gumbel = jnp.abs(shape) < self._gumbel_threshold
+        safe_shape = jnp.where(is_gumbel, 1.0, shape)
+        has_interior_mode = shape > -1.0
+        safe_base = jnp.where(has_interior_mode, 1.0 + shape, 1.0)
 
         def gumbel_mode():
             return loc
 
         def gevd_mode():
-            return loc + (scale / shape) * (jnp.power(1.0 + shape, -shape) - 1.0)
+            interior_mode = loc + (scale / safe_shape) * (
+                jnp.power(safe_base, -shape) - 1.0
+            )
+            return jnp.where(has_interior_mode, interior_mode, self.upper_bound())
 
         mode_gumbel = gumbel_mode()
         mode_gevd = gevd_mode()
@@ -412,7 +422,22 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         Returns:
             Survival probabilities
         """
-        return 1.0 - self.cdf(value)
+        shape = jnp.asarray(self.concentration)
+        is_gumbel = jnp.abs(shape) < self._gumbel_threshold
+        xi = jnp.where(is_gumbel, 1.0, shape)
+        z = (value - self.loc) / self.scale
+
+        gumbel = -jnp.expm1(-jnp.exp(-z))
+
+        t = 1.0 + xi * z
+        valid = t > 0.0
+        t_safe = jnp.where(valid, t, 1.0)
+        log_cdf = -jnp.power(t_safe, -1.0 / xi)
+        gev_inside = -jnp.expm1(log_cdf)
+        boundary = jnp.where(shape > 0, 1.0, 0.0)
+        gevd = jnp.where(valid, gev_inside, boundary)
+
+        return jnp.where(is_gumbel, gumbel, gevd)
 
     def log_survival_function(self, value: jnp.ndarray) -> jnp.ndarray:
         """
@@ -424,7 +449,22 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         Returns:
             Survival probabilities
         """
-        return jnp.log(self.survival_function(value))
+        shape = jnp.asarray(self.concentration)
+        is_gumbel = jnp.abs(shape) < self._gumbel_threshold
+        xi = jnp.where(is_gumbel, 1.0, shape)
+        z = (value - self.loc) / self.scale
+
+        gumbel = jnp.log(-jnp.expm1(-jnp.exp(-z)))
+
+        t = 1.0 + xi * z
+        valid = t > 0.0
+        t_safe = jnp.where(valid, t, 1.0)
+        log_cdf = -jnp.power(t_safe, -1.0 / xi)
+        gev_inside = jnp.log(-jnp.expm1(log_cdf))
+        boundary = jnp.where(shape > 0, 0.0, -jnp.inf)
+        gevd = jnp.where(valid, gev_inside, boundary)
+
+        return jnp.where(is_gumbel, gumbel, gevd)
 
     def hazard_rate(self, value: jnp.ndarray) -> jnp.ndarray:
         """

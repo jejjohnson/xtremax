@@ -360,7 +360,26 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Survival probabilities
         """
-        return 1.0 - self.cdf(value)
+        scale = jnp.asarray(self.scale)
+        shape = jnp.asarray(self.shape)
+        value = jnp.asarray(value)
+        is_exponential = jnp.abs(shape) < self._exponential_threshold
+        safe_shape = jnp.where(is_exponential, jnp.ones_like(shape), shape)
+
+        # Below the lower support bound x < 0, survival is exactly 1.
+        value_in_support = value >= 0.0
+
+        exponential = jnp.exp(-jnp.maximum(value, 0.0) / scale)
+
+        t = 1.0 + safe_shape * value / scale
+        valid = t > 0.0
+        t_safe = jnp.where(valid, t, 1.0)
+        pareto_inside = jnp.power(t_safe, -1.0 / safe_shape)
+        boundary = jnp.where(shape < 0, 0.0, 1.0)
+        pareto = jnp.where(valid, pareto_inside, boundary)
+
+        survival = jnp.where(is_exponential, exponential, pareto)
+        return jnp.where(value_in_support, survival, 1.0)
 
     def hazard_rate(self, value: jnp.ndarray) -> jnp.ndarray:
         """
@@ -405,7 +424,23 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Cumulative hazard rate values
         """
-        return -jnp.log(self.survival_function(value))
+        scale = jnp.asarray(self.scale)
+        shape = jnp.asarray(self.shape)
+        value = jnp.asarray(value)
+        is_exponential = jnp.abs(shape) < self._exponential_threshold
+        safe_shape = jnp.where(is_exponential, jnp.ones_like(shape), shape)
+
+        exponential = jnp.maximum(value, 0.0) / scale
+
+        t = 1.0 + safe_shape * value / scale
+        valid = t > 0.0
+        t_safe = jnp.where(valid, t, 1.0)
+        pareto_inside = jnp.log(t_safe) / safe_shape
+        boundary = jnp.where(shape < 0, jnp.inf, 0.0)
+        pareto = jnp.where(valid, pareto_inside, boundary)
+
+        cumulative_hazard = jnp.where(is_exponential, exponential, pareto)
+        return jnp.where(value >= 0.0, cumulative_hazard, 0.0)
 
     def return_level(self, return_period: float | jnp.ndarray) -> jnp.ndarray:
         """Return level. Thin wrapper for ``gpd_return_level``."""

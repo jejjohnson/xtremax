@@ -113,6 +113,36 @@ class TestGEVD:
                 f"shape={shape}: empirical {empirical} vs analytical {analytical}"
             )
 
+    def test_mode_equals_upper_bound_when_shape_le_minus_one(self):
+        """For ξ ≤ -1 the GEV density is maximized at the upper endpoint,
+        not at the interior stationary-point formula.
+        """
+        for shape in [-1.0, -1.2, -2.0]:
+            d = GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, shape=shape)
+            assert jnp.allclose(d.mode, d.upper_bound(), atol=1e-6)
+
+    def test_log_survival_stays_finite_in_gumbel_far_tail(self):
+        """Regression: generic GEV log survival used `log(1 - cdf)` and
+        underflowed to `-inf` in the far Gumbel tail.
+        """
+        d = GeneralizedExtremeValueDistribution(loc=0.0, scale=1.5, concentration=0.0)
+        ref = GumbelType1GEVD(loc=0.0, scale=1.5)
+        x = jnp.array(20.0)
+        assert jnp.isfinite(d.log_survival_function(x))
+        assert jnp.allclose(d.log_survival_function(x), ref.log_survival_function(x))
+
+    def test_frechet_survival_stays_positive_in_far_tail(self):
+        """Regression: generic GEV survival used `1 - cdf` and rounded to
+        zero in the far Fréchet tail, making the cumulative hazard blow up.
+        """
+        d = GeneralizedExtremeValueDistribution(loc=0.0, scale=1.0, concentration=0.2)
+        x = jnp.array(1000.0)
+        survival = d.survival_function(x)
+        cumulative_hazard = d.cumulative_hazard_rate(x)
+        assert float(survival) > 0.0
+        assert jnp.isfinite(cumulative_hazard)
+        assert jnp.allclose(cumulative_hazard, -d.log_survival_function(x), atol=1e-6)
+
 
 class TestGPD:
     def test_log_prob_and_sample_shape(self, key):
@@ -223,6 +253,21 @@ class TestGPD:
         d = GeneralizedParetoDistribution(scale=2.0, shape=0.3)
         x = jnp.array([0.5, 1.0, 2.0, 5.0])
         assert jnp.allclose(d.survival_function(x), 1.0 - d.cdf(x), atol=1e-6)
+
+    def test_survival_and_cumulative_hazard_stable_in_far_tail(self):
+        """Regression: `1 - cdf` cancelled to zero in the far tail even when
+        the true survival probability was still representable.
+        """
+        d = GeneralizedParetoDistribution(scale=1.0, shape=0.2)
+        x = jnp.array(1000.0)
+        survival = d.survival_function(x)
+        cumulative_hazard = d.cumulative_hazard_rate(x)
+        expected_survival = jnp.power(1.0 + 0.2 * x, -5.0)
+        expected_cumulative_hazard = 5.0 * jnp.log(1.0 + 0.2 * x)
+        assert float(survival) > 0.0
+        assert jnp.isfinite(cumulative_hazard)
+        assert jnp.allclose(survival, expected_survival, rtol=1e-5)
+        assert jnp.allclose(cumulative_hazard, expected_cumulative_hazard, rtol=1e-5)
 
 
 class TestGumbel:
@@ -406,6 +451,11 @@ class TestFrechet:
         # All finite for ξ < 1.
         assert bool(jnp.all(jnp.isfinite(me)))
 
+    def test_support_accepts_lower_endpoint(self):
+        """Fréchet support is closed at the lower endpoint x = μ - σ/ξ."""
+        d = FrechetType2GEVD(loc=0.0, scale=1.0, shape=0.2)
+        assert bool(d.support(d.lower_bound()))
+
 
 class TestWeibull:
     def test_log_prob_and_sample_shape(self, key):
@@ -492,6 +542,17 @@ class TestWeibull:
             assert abs(empirical - analytical) < 5e-3, (
                 f"shape={shape}: empirical {empirical} vs analytical {analytical}"
             )
+
+    def test_mode_equals_upper_bound_when_shape_le_minus_one(self):
+        """For ξ ≤ -1 the reverse-Weibull density peaks at the upper endpoint."""
+        for shape in [-1.0, -1.2, -2.0]:
+            d = WeibullType3GEVD(loc=0.0, scale=1.0, shape=shape)
+            assert jnp.allclose(d.mode, d.upper_bound(), atol=1e-6)
+
+    def test_support_accepts_upper_endpoint(self):
+        """Weibull support is closed at the upper endpoint x = μ - σ/ξ."""
+        d = WeibullType3GEVD(loc=0.0, scale=1.0, shape=-0.2)
+        assert bool(d.support(d.upper_bound()))
 
 
 class TestPRNGKeyValidation:

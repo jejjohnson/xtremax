@@ -179,7 +179,7 @@ class WeibullType3GEVD(dist.Distribution):
             Constraint representing x ≤ μ - σ/ξ (upper bounded)
         """
         upper_bound = self.upper_bound()
-        return constraints.less_than(upper_bound)
+        return constraints.interval(self.lower_bound(), upper_bound)
 
     def upper_bound(self) -> jnp.ndarray:
         """
@@ -217,15 +217,19 @@ class WeibullType3GEVD(dist.Distribution):
         The mode is:
         mode = μ + (σ/ξ) * ((1+ξ)^(-ξ) - 1)
 
-        Since ξ < 0, this represents the most likely value below the upper bound.
+        This interior stationary point only exists for -1 < ξ < 0. For
+        ξ ≤ -1, the density increases all the way to the finite upper
+        endpoint, so the mode is the upper bound itself.
 
         Returns:
             Mode of the distribution
         """
         loc, scale, shape = self.loc, self.scale, self.shape
+        has_interior_mode = shape > -1.0
+        safe_base = jnp.where(has_interior_mode, 1.0 + shape, 1.0)
 
-        # Mode formula: mode = μ + (σ/ξ) * ((1+ξ)^(-ξ) - 1)
-        return loc + (scale / shape) * (jnp.power(1.0 + shape, -shape) - 1.0)
+        interior_mode = loc + (scale / shape) * (jnp.power(safe_base, -shape) - 1.0)
+        return jnp.where(has_interior_mode, interior_mode, self.upper_bound())
 
     @property
     def variance(self) -> jnp.ndarray:
