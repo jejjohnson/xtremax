@@ -13,6 +13,7 @@ from xtremax.extraction import (
     decluster_separation,
     declustered_block_maxima,
     quantile_threshold,
+    r_largest_block_maxima,
     rolling_threshold,
     seasonal_threshold,
     temporal_block_maxima,
@@ -34,6 +35,18 @@ class TestBlockMaxima:
         assert "time" in annual.dims
         assert annual.sizes["time"] == 3  # 3 years
         assert bool(np.all(np.isfinite(annual.values)))
+
+    def test_r_largest_with_int_block_size_runs(self, daily_series):
+        """Regression: fixed-size (int) block_size branch used to call
+        `.values` on numpy sub-arrays yielded by reshape+iterate, raising
+        AttributeError before producing any output.
+        """
+        out = r_largest_block_maxima(daily_series, block_size=30, r=3)
+        assert "block" in out.dims and "order" in out.dims
+        assert out.sizes["order"] == 3
+        assert bool(np.all(np.isfinite(out.values)))
+        # Order-1 ≥ order-2 ≥ order-3 within each block (descending).
+        assert bool(np.all(np.diff(out.values, axis=1) <= 0))
 
 
 class TestThreshold:

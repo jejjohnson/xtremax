@@ -312,7 +312,11 @@ class GumbelType1GEVD(dist.Distribution):
         Returns:
             Survival probabilities
         """
-        return 1.0 - self.cdf(value)
+        # Computed as `-expm1(-exp(-z))` rather than `1 - cdf` so the upper
+        # tail stays numerically resolvable (1 - exp(-small) catastrophically
+        # cancels to 0 once S(x) is below ~1e-7).
+        z = (value - self.loc) / self.scale
+        return -jnp.expm1(-jnp.exp(-z))
 
     def log_survival_function(self, value: jnp.ndarray) -> jnp.ndarray:
         """
@@ -329,16 +333,13 @@ class GumbelType1GEVD(dist.Distribution):
         """
         loc, scale = self.loc, self.scale
         z = (value - loc) / scale
-
-        # For large z, use log(S(x)) ≈ -exp(-z) to avoid numerical issues
-        exp_neg_z = jnp.exp(-z)
-
-        # Use log1p(-x) = log(1-x) for better numerical stability when x is small
-        return jnp.where(
-            z > 5.0,  # For large z, F(x) ≈ 1, so use approximation
-            -exp_neg_z,  # log(S(x)) ≈ -exp(-z)
-            jnp.log1p(-jnp.exp(-exp_neg_z)),  # log(1 - F(x))
-        )
+        # S(x) = 1 - F(x) = -expm1(-exp(-z)).
+        # log S(x) = log(-expm1(-exp(-z))) — numerically stable across both
+        # tails. For large z: exp(-z) → 0, -expm1(-u) → u, so log S → -z
+        # (the correct Gumbel upper-tail asymptote). The previous branch
+        # returned ≈ -exp(-z) at large z, which tends to 0 instead of the
+        # large negative log-survival.
+        return jnp.log(-jnp.expm1(-jnp.exp(-z)))
 
     def hazard_rate(self, value: jnp.ndarray) -> jnp.ndarray:
         r"""Hazard rate :math:`h(x) = f(x) / S(x)` for the Gumbel.
@@ -396,36 +397,27 @@ class GumbelType1GEVD(dist.Distribution):
         return self.survival_function(threshold)
 
     def conditional_excess_mean(self, threshold: jnp.ndarray) -> jnp.ndarray:
+        r"""Mean excess :math:`E[X - u \mid X > u]` for the Gumbel.
+
+        Computed from the identity
+
+        .. math:: E[X - u \mid X > u] \, S(u) = \int_u^\infty S(x)\,dx
+
+        via a trapezoidal quadrature over a grid from ``u`` to ``u + 50σ``
+        (well past the Gumbel tail). The previous closed form
+        ``σ·(exp(-z_u) + γ)`` had the wrong upper-tail limit
+        (``γσ`` instead of ``σ``).
+
+        Returns ``NaN`` where the survival probability is effectively zero.
         """
-        Compute the mean excess function: E[X - u | X > u].
-
-        For Gumbel Type I, this can be computed using the relationship:
-        E[X - u | X > u] = σ * (γ + ln(S(u))) / S(u)
-        where S(u) is the survival function at threshold u.
-
-        This represents the expected exceedance size given that an
-        exceedance occurs, which is important for risk assessment.
-
-        Args:
-            threshold: Threshold value u
-
-        Returns:
-            Conditional excess mean values
-        """
-        loc, scale = self.loc, self.scale
-        z_u = (threshold - loc) / scale
-
-        # Survival = 1 - F(u) (not F(u) itself). Use -expm1 for stability
-        # across both tails.
-        survival_u = -jnp.expm1(-jnp.exp(-z_u))
-
-        # For Gumbel, the mean excess can be computed as:
-        # E[X - u | X > u] = σ * (exp(-z_u) + γ)
-        # This is derived from the exponential integral properties
-        mean_excess = scale * (jnp.exp(-z_u) + self._euler_gamma)
-
-        # Return NaN where survival probability is effectively zero
-        return jnp.where(survival_u > 1e-15, mean_excess, jnp.nan)
+        scale = self.scale
+        # 1024 points from 0 to 50σ is overkill for Gumbel but cheap.
+        offsets = jnp.linspace(0.0, 50.0, 1024) * scale
+        grid = threshold + offsets
+        integrand = self.survival_function(grid)
+        integral = jnp.trapezoid(integrand, x=offsets)
+        survival_u = self.survival_function(threshold)
+        return jnp.where(survival_u > 1e-15, integral / survival_u, jnp.nan)
 
     def median(self) -> jnp.ndarray:
         """

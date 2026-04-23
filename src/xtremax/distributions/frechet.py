@@ -366,10 +366,12 @@ class FrechetType2GEVD(dist.Distribution):
         t = 1.0 + shape * z
 
         valid = t > 0.0
-        # Log survival = -t^(-1/ξ)
-        log_surv = -jnp.power(jnp.where(valid, t, 1.0), -1.0 / shape)
-
-        return jnp.where(valid, log_surv, -jnp.inf)
+        # With F(x) = exp(-t^(-1/ξ)), log F(x) = -t^(-1/ξ). The survival
+        # is 1 - F(x) = -expm1(-t^(-1/ξ)), and log S = log(-expm1(...)).
+        log_f = -jnp.power(jnp.where(valid, t, 1.0), -1.0 / shape)
+        log_surv_inside = jnp.log(-jnp.expm1(log_f))
+        # Below the lower bound (t <= 0), F(x) = 0 so log S = 0.
+        return jnp.where(valid, log_surv_inside, 0.0)
 
     def hazard_rate(self, value: jnp.ndarray) -> jnp.ndarray:
         """

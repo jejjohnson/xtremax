@@ -166,6 +166,19 @@ class TestGPD:
         c = gpd_cdf(x, scale, shape)
         assert jnp.allclose(c, 1.0)
 
+    def test_log_prob_continuous_across_shape_zero(self):
+        """Regression: for tiny negative shape, the primitive previously
+        set upper_bound = -scale/1 (due to _safe_shape substitution), so
+        log_prob returned -inf everywhere. Verify continuity across ξ=0.
+        """
+        x = jnp.linspace(0.1, 3.0, 10)
+        lp_tiny_neg = gpd_log_prob(x, 1.0, -1e-8)
+        lp_zero = gpd_log_prob(x, 1.0, 0.0)
+        lp_tiny_pos = gpd_log_prob(x, 1.0, 1e-8)
+        assert jnp.all(jnp.isfinite(lp_tiny_neg))
+        assert jnp.allclose(lp_tiny_neg, lp_zero, atol=1e-5)
+        assert jnp.allclose(lp_tiny_pos, lp_zero, atol=1e-5)
+
     def test_cdf_approaches_one_near_upper_bound(self):
         """CDF should be continuous at the upper endpoint, approaching 1."""
         scale, shape = 1.0, -0.3

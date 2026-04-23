@@ -35,8 +35,11 @@ def gpd_log_prob(
     is_exp = jnp.abs(shape) < _EXPONENTIAL_THRESHOLD
     xi = _safe_shape(shape)
 
-    # Support: x >= 0; when ξ < 0 also x <= -σ/ξ.
-    upper_bound = jnp.where(shape < 0, -scale / xi, jnp.inf)
+    # Support: x >= 0; when ξ < 0 (and we are not in the exponential-limit
+    # regime) also x <= -σ/ξ. For ξ ≈ 0 the safe-shape substitution sets
+    # `xi = 1`, so `-scale/xi` would incorrectly produce `-scale` here —
+    # exclude the exponential branch from the finite-upper-bound case.
+    upper_bound = jnp.where((shape < 0) & ~is_exp, -scale / shape, jnp.inf)
     in_support = (x >= 0.0) & (x <= upper_bound)
 
     exponential = -jnp.log(scale) - x / scale

@@ -52,6 +52,15 @@ class TestGPD:
         assert jnp.all(jnp.isfinite(lp))
         assert jnp.all(samples >= 0)  # GPD support is x >= 0 when loc = 0
 
+    def test_percentile_residual_life_at_p_zero_returns_zero(self):
+        """Regression: conditional CDF was `1 - p*S(t)` (wrong) instead of
+        `1 - (1-p)*S(t)`. At p=0 the correct residual life is 0 (the
+        conditional 0th-percentile equals the threshold).
+        """
+        d = GeneralizedExtremeValueDistribution(0.0, 1.0, 0.1)
+        r = d.percentile_residual_life(jnp.array(1.0), percentile=0.0)
+        assert jnp.allclose(r, 0.0, atol=1e-5)
+
     def test_survival_uses_scale_not_shape(self):
         """Regression: survival_function previously aliased `scale = self.shape`.
 
@@ -107,6 +116,30 @@ class TestGumbel:
         m = d.conditional_excess_mean(jnp.array(-2.0))
         assert jnp.isfinite(m)
 
+    def test_conditional_excess_mean_upper_tail_asymptote(self):
+        """Regression: the old closed form `σ·(exp(-z_u) + γ)` converged to
+        γσ (≈ 0.577σ) instead of σ in the upper tail. The correct limit
+        for a Gumbel tail is σ (the exponential-tail mean-residual-life).
+        """
+        scale = 1.5
+        d = GumbelType1GEVD(loc=0.0, scale=scale)
+        m = d.conditional_excess_mean(jnp.array(20.0))
+        assert jnp.allclose(m, scale, atol=5e-3)
+
+    def test_log_survival_upper_tail_asymptote(self):
+        """Regression: the z > 5 branch returned ≈ -exp(-z), not ≈ -z.
+
+        For Gumbel S(x) ≈ exp(-z) in the upper tail, so log S ≈ -z.
+        """
+        scale = 1.5
+        d = GumbelType1GEVD(loc=0.0, scale=scale)
+        x = jnp.array(20.0)
+        log_s = d.log_survival_function(x)
+        expected_z = float(x / scale)
+        # Allow some numerical slack — but it must be close to -z ≈ -13.3,
+        # not close to 0.
+        assert float(log_s) == pytest.approx(-expected_z, abs=1e-3)
+
 
 class TestFrechet:
     def test_log_prob_and_sample_shape(self, key):
@@ -116,6 +149,14 @@ class TestFrechet:
         lp = dist.log_prob(samples)
         assert jnp.all(jnp.isfinite(lp))
 
+    def test_log_survival_matches_log_of_survival(self):
+        """Regression: log_survival previously returned log F(x), not log S(x)."""
+        d = FrechetType2GEVD(loc=0.0, scale=1.0, shape=0.2)
+        x = jnp.linspace(1.5, 10.0, 10)
+        log_s = d.log_survival_function(x)
+        expected = jnp.log(1.0 - d.cdf(x))
+        assert jnp.allclose(log_s, expected, atol=1e-5)
+
 
 class TestWeibull:
     def test_log_prob_and_sample_shape(self, key):
@@ -124,6 +165,12 @@ class TestWeibull:
         assert samples.shape == (32,)
         lp = dist.log_prob(samples)
         assert jnp.all(jnp.isfinite(lp))
+
+    def test_percentile_residual_life_at_p_zero_returns_zero(self):
+        """Same conditional-CDF fix as the GEVD case."""
+        d = WeibullType3GEVD(0.0, 1.0, -0.3)
+        r = d.percentile_residual_life(jnp.array(-1.0), percentile=0.0)
+        assert jnp.allclose(r, 0.0, atol=1e-5)
 
 
 class TestPRNGKeyValidation:

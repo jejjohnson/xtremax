@@ -316,8 +316,13 @@ def r_largest_block_maxima(
     """
 
     def get_r_largest(block):
-        """Extract r largest values from a block."""
-        sorted_block = np.sort(block.values.flatten())
+        """Extract r largest values from a block.
+
+        Accepts both xarray DataArrays (groupby path) and plain numpy
+        arrays (fixed-size reshape path), since ``np.asarray`` on a
+        DataArray materializes its values.
+        """
+        sorted_block = np.sort(np.asarray(block).flatten())
         # Remove NaNs
         sorted_block = sorted_block[~np.isnan(sorted_block)]
 

@@ -476,14 +476,12 @@ class WeibullType3GEVD(dist.Distribution):
         Returns:
             Percentile residual life values
         """
-        # Conditional quantile given X > t
+        # Conditional CDF: F(x | X > t) = p ⟺ F(x) = 1 - (1 - p) S(t).
+        # (Previously used `1 - p S(t)`, which mapped p=0 to F^{-1}(1),
+        # i.e. the upper endpoint, instead of returning zero residual.)
         survival_prob = self.survival_function(time)
-        conditional_prob = percentile * survival_prob
-        total_prob = 1.0 - conditional_prob
-
-        conditional_quantile = self.icdf(total_prob)
-
-        return conditional_quantile - time
+        total_prob = 1.0 - (1.0 - percentile) * survival_prob
+        return self.icdf(total_prob) - time
 
     def expand(
         self, batch_shape: tuple, _instance: dist.Distribution | None = None
