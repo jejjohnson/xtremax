@@ -49,6 +49,61 @@ class TestBlockMaxima:
         # Order-1 ≥ order-2 ≥ order-3 within each block (descending).
         assert bool(np.all(np.diff(out.values, axis=1) <= 0))
 
+    def test_r_largest_int_block_preserves_non_dim_axes(self):
+        """Regression: the int-block path used `np.asarray(block).flatten()`
+        which pooled every non-``dim`` axis into the top-r sort, returning
+        shared maxima across all sites instead of per-site order statistics.
+        """
+        # Two sites with deliberately non-overlapping value ranges so any
+        # accidental pooling would surface immediately.
+        time = pd.date_range("2020-01-01", periods=20, freq="D")
+        # Site 0: values 1..20. Site 1: values 101..120.
+        values = np.stack(
+            [np.arange(1, 21, dtype=float), np.arange(101, 121, dtype=float)],
+            axis=-1,
+        )
+        da = xr.DataArray(
+            values,
+            dims=("time", "site"),
+            coords={"time": time, "site": [0, 1]},
+        )
+        out = r_largest_block_maxima(da, block_size=10, r=3, dim="time")
+
+        # Two blocks (10 elements each) × two sites × r=3.
+        assert out.sizes == {"block": 2, "order": 3, "site": 2}
+        # Per-site top-3 from block 0 must be {10,9,8} for site 0 and
+        # {110,109,108} for site 1. If pooled, site 0 would incorrectly
+        # contain the site-1 values.
+        site0_b0 = out.isel(block=0).sel(site=0).values
+        site1_b0 = out.isel(block=0).sel(site=1).values
+        np.testing.assert_array_equal(site0_b0, [10.0, 9.0, 8.0])
+        np.testing.assert_array_equal(site1_b0, [110.0, 109.0, 108.0])
+
+    def test_r_largest_str_block_preserves_non_dim_axes(self):
+        """Same regression check for the resample (str block_size) path."""
+        time = pd.date_range("2020-01-01", periods=365 * 2, freq="D")
+        rng = np.random.default_rng(0)
+        # Two sites shifted far apart; each-site top values must be from
+        # that site's own range, not a pooled union.
+        values = np.stack(
+            [rng.standard_normal(730), rng.standard_normal(730) + 100.0],
+            axis=-1,
+        )
+        da = xr.DataArray(
+            values,
+            dims=("time", "site"),
+            coords={"time": time, "site": [0, 1]},
+        )
+        out = r_largest_block_maxima(da, block_size="YS", r=3, dim="time")
+
+        assert "site" in out.dims
+        # All site-0 extracted values must be within site-0's sensible
+        # range (well below site-1's +100 offset).
+        site0 = out.sel(site=0).values
+        site1 = out.sel(site=1).values
+        assert float(np.nanmax(site0)) < 20.0  # no site-1 leakage
+        assert float(np.nanmin(site1)) > 80.0  # no site-0 leakage
+
 
 class TestThreshold:
     def test_constant(self, daily_series):

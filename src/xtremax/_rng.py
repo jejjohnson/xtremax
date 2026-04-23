@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import jax.dtypes
 import jax.numpy as jnp
+
+
+_BAD_KEY_MSG = (
+    "`key` must be a JAX PRNG key. Pass either `jax.random.key(...)` "
+    "or the legacy `jax.random.PRNGKey(...)`."
+)
 
 
 def check_prng_key(key) -> None:
@@ -14,19 +21,15 @@ def check_prng_key(key) -> None:
     is stripped under ``python -O`` and gives an unhelpful message.
     """
     if not hasattr(key, "dtype") or not hasattr(key, "shape"):
-        raise TypeError(
-            "`key` must be a JAX PRNG key. Pass either `jax.random.key(...)` "
-            "or the legacy `jax.random.PRNGKey(...)`."
-        )
+        raise TypeError(_BAD_KEY_MSG)
     dtype = key.dtype
-    is_typed = not jnp.issubdtype(dtype, jnp.integer)
+    # Typed keys carry a special PRNG dtype; checking `not integer` would
+    # incorrectly accept any non-integer array (e.g. float32) as a key.
+    is_typed = jax.dtypes.issubdtype(dtype, jax.dtypes.prng_key)
     is_legacy = (
         jnp.issubdtype(dtype, jnp.integer)
         and dtype == jnp.uint32
         and key.shape[-1:] == (2,)
     )
     if not (is_typed or is_legacy):
-        raise TypeError(
-            "`key` must be a JAX PRNG key. Pass either `jax.random.key(...)` "
-            "or the legacy `jax.random.PRNGKey(...)`."
-        )
+        raise TypeError(_BAD_KEY_MSG)

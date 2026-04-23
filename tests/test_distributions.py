@@ -311,6 +311,25 @@ class TestWeibull:
         r = d.percentile_residual_life(jnp.array(-1.0), percentile=0.0)
         assert jnp.allclose(r, 0.0, atol=1e-5)
 
+    def test_entropy_matches_gev_formula(self):
+        """Regression: Weibull entropy used `log σ + ξ + 1 + γξ`; the
+        correct GEV-branch formula is `log σ + 1 + γ(1 + ξ)`. At ξ = 0
+        it must also reduce to the Gumbel entropy `log σ + 1 + γ`.
+        """
+        scale, xi = 1.7, -0.25
+        d = WeibullType3GEVD(loc=0.0, scale=scale, shape=xi)
+        euler_gamma = 0.5772156649015329
+        expected = float(jnp.log(scale) + 1.0 + euler_gamma * (1.0 + xi))
+        assert jnp.allclose(d.entropy(), expected, atol=1e-6)
+
+    def test_entropy_continuous_at_shape_zero(self):
+        """Weibull entropy at ξ→0⁻ must match the Gumbel formula."""
+        scale = 1.7
+        euler_gamma = 0.5772156649015329
+        d_tiny = WeibullType3GEVD(loc=0.0, scale=scale, shape=-1e-8)
+        expected_gumbel = float(jnp.log(scale) + 1.0 + euler_gamma)
+        assert jnp.allclose(d_tiny.entropy(), expected_gumbel, atol=1e-5)
+
     def test_mode_matches_argmax_of_pdf(self):
         """Regression: Weibull Type III mode used `(1+ξ)^ξ` — the
         GEV-parameterisation stationary point is `(1+ξ)^(-ξ)`.
@@ -342,3 +361,24 @@ class TestPRNGKeyValidation:
         legacy = jax.random.PRNGKey(0)
         samples = d.sample(legacy, sample_shape=(4,))
         assert samples.shape == (4,)
+
+    def test_rejects_float_array_with_typeerror(self):
+        """Regression: `is_typed = not issubdtype(dtype, integer)` used to
+        classify any non-integer array as a typed PRNG key, so a plain
+        float32 array was silently accepted and broke deep inside the
+        sampling call. The validator now uses `jax.dtypes.prng_key` and
+        rejects non-keys up front with a clear TypeError.
+        """
+        d = GumbelType1GEVD(loc=0.0, scale=1.0)
+        not_a_key = jnp.array([1.0, 2.0], dtype=jnp.float32)
+        with pytest.raises(TypeError, match="JAX PRNG key"):
+            d.sample(not_a_key, sample_shape=(4,))
+
+    def test_rejects_wrong_shape_uint32_with_typeerror(self):
+        """A uint32 array that isn't shaped like a legacy key must still
+        be rejected (e.g. `uint32[5]` where the trailing dim != 2).
+        """
+        d = GumbelType1GEVD(loc=0.0, scale=1.0)
+        not_a_key = jnp.array([1, 2, 3, 4, 5], dtype=jnp.uint32)
+        with pytest.raises(TypeError, match="JAX PRNG key"):
+            d.sample(not_a_key, sample_shape=(4,))

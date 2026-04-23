@@ -307,70 +307,73 @@ def r_largest_block_maxima(
     value distributions.
     """
 
-    def get_r_largest(block):
-        """Extract r largest values from a block.
+    def _top_r_1d(values: np.ndarray) -> np.ndarray:
+        """Top-r descending from a 1-D array, NaN-padded to length r.
 
-        Accepts both xarray DataArrays (groupby path) and plain numpy
-        arrays (fixed-size reshape path), since ``np.asarray`` on a
-        DataArray materializes its values.
+        Operating per 1-D slice is what keeps non-``dim`` axes independent
+        — flattening a multi-dim block pools every non-``dim`` axis into
+        one sample and corrupts per-site r-largest extraction.
         """
-        sorted_block = np.sort(np.asarray(block).flatten())
-        # Remove NaNs
-        sorted_block = sorted_block[~np.isnan(sorted_block)]
-
-        if min_periods is not None and len(sorted_block) < min_periods:
-            return np.full(r, np.nan)
-
-        if len(sorted_block) < r:
-            # Pad with NaN if insufficient data
-            result = np.full(r, np.nan)
-            result[: len(sorted_block)] = sorted_block[-len(sorted_block) :][::-1]
-            return result
-
-        return sorted_block[-r:][::-1]  # Return in descending order
+        clean = values[~np.isnan(values)]
+        out = np.full(r, np.nan, dtype=float)
+        if min_periods is not None and clean.size < min_periods:
+            return out
+        if clean.size == 0:
+            return out
+        sorted_asc = np.sort(clean)
+        k = min(clean.size, r)
+        out[:k] = sorted_asc[-k:][::-1]
+        return out
 
     if isinstance(block_size, str):
-        # Time-based resampling
+        # Time-based resampling; delegate to apply_ufunc over `dim` so
+        # non-``dim`` axes are processed independently per group.
         groups = da.resample({dim: block_size})
 
-        # Apply r-largest extraction to each group
-        r_largest_list = []
-        group_labels = []
+        def _group_top_r(group: xr.DataArray) -> xr.DataArray:
+            return xr.apply_ufunc(
+                _top_r_1d,
+                group,
+                input_core_dims=[[dim]],
+                output_core_dims=[["order"]],
+                vectorize=True,
+                output_dtypes=[float],
+                dask_gufunc_kwargs={"output_sizes": {"order": r}},
+            )
 
-        for label, group in groups:
-            r_vals = get_r_largest(group)
-            r_largest_list.append(r_vals)
-            group_labels.append(label)
-
-        # Construct output array
-        result = xr.DataArray(
-            np.array(r_largest_list),
-            dims=[dim, "order"],
-            coords={dim: group_labels, "order": np.arange(1, r + 1)},
-            attrs=da.attrs,
-        )
+        result = groups.map(_group_top_r)
+        result = result.assign_coords(order=np.arange(1, r + 1))
+        result.attrs = da.attrs
         return result
     else:
-        # Fixed-size blocks - use reshape and apply
-        # This is a simplified version for 1D case
-        n_blocks = len(da[dim]) // block_size
+        # Fixed-size blocks. Label each position along `dim` with its
+        # block id and groupby; for each block, run the 1-D selector per
+        # non-``dim`` slice via apply_ufunc. This preserves the multi-dim
+        # structure instead of flattening every non-``dim`` axis into
+        # the block-wise top-r pool.
+        n_blocks = da.sizes[dim] // block_size
         trimmed_length = n_blocks * block_size
         trimmed = da.isel({dim: slice(0, trimmed_length)})
 
-        # Reshape into blocks
-        new_shape = (n_blocks, block_size, *trimmed.shape[1:])
-        reshaped = trimmed.values.reshape(new_shape)
+        block_ids = np.arange(trimmed_length) // block_size
+        trimmed = trimmed.assign_coords(_block=(dim, block_ids))
 
-        # Get r-largest from each block
-        r_largest = np.array([get_r_largest(block) for block in reshaped])
+        def _per_block_top_r(group: xr.DataArray) -> xr.DataArray:
+            return xr.apply_ufunc(
+                _top_r_1d,
+                group,
+                input_core_dims=[[dim]],
+                output_core_dims=[["order"]],
+                vectorize=True,
+                output_dtypes=[float],
+                dask_gufunc_kwargs={"output_sizes": {"order": r}},
+            )
 
-        # Create coordinate for block centers
+        result = trimmed.groupby("_block").map(_per_block_top_r)
         block_coords = da[dim].values[:trimmed_length:block_size]
-
-        result = xr.DataArray(
-            r_largest,
-            dims=["block", "order"],
-            coords={"block": block_coords, "order": np.arange(1, r + 1)},
-            attrs=da.attrs,
+        result = result.rename({"_block": "block"}).assign_coords(
+            block=block_coords,
+            order=np.arange(1, r + 1),
         )
+        result.attrs = da.attrs
         return result
