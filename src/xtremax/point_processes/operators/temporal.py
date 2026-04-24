@@ -24,6 +24,7 @@ from collections.abc import Callable
 from typing import NamedTuple
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
@@ -91,6 +92,46 @@ class PiecewiseConstantLogIntensity(eqx.Module):
         idx = jnp.searchsorted(self.bin_edges[1:], t, side="right")
         idx = jnp.clip(idx, 0, self.log_rates.shape[-1] - 1)
         return self.log_rates[idx]
+
+    def integrate(
+        self,
+        a: ArrayLike,
+        b: ArrayLike,
+    ) -> Array:
+        """Closed-form :math:`\\int_a^b \\exp(\\log \\lambda(s))\\, ds`.
+
+        Implemented exactly as a sum over bin overlaps — unlike the
+        operator's default quadrature, this scales linearly in the
+        number of bins rather than the number of quadrature nodes and
+        has no truncation error, so ``eqx.filter_grad`` through
+        ``log_rates`` is exact. The :class:`InhomogeneousPoissonProcess`
+        operator prefers this method over quadrature whenever the
+        intensity module exposes it and the caller has not pinned a
+        fixed ``integrated_intensity``.
+        """
+        a = jnp.asarray(a)
+        b = jnp.asarray(b)
+        rates = jnp.exp(self.log_rates)
+        widths = jnp.diff(self.bin_edges)
+        left_edges = self.bin_edges[:-1]
+        right_edges = self.bin_edges[1:]
+        # Per bin, integrate rate × (min(b, right) − max(a, left))₊ over
+        # all bins; vmap-friendly and differentiable through log_rates.
+        overlap = jnp.clip(
+            jnp.minimum(b, right_edges) - jnp.maximum(a, left_edges),
+            min=0.0,
+            max=widths,
+        )
+        return jnp.sum(rates * overlap)
+
+    def max_intensity(self) -> Array:
+        """Live ``λ_max = max(exp(log_rates))`` from the current leaves.
+
+        Reading this from ``log_rates`` every call means thinning
+        samplers stay safe even after ``log_rates`` has been updated by
+        an optimiser.
+        """
+        return jnp.exp(jnp.max(self.log_rates))
 
 
 class GoodnessOfFit(NamedTuple):
@@ -259,16 +300,23 @@ class InhomogeneousPoissonProcess(eqx.Module):
             of log-intensities (same shape). If this is itself an
             ``eqx.Module`` its parameters are part of the PyTree.
         observation_window: Window length ``T > 0``.
-        integrated_intensity: :math:`\\Lambda(T)`. If ``None``, it is
-            computed on the fly from ``log_intensity_fn`` via
-            trapezoidal quadrature using ``n_integration_points``
-            nodes.
-        lambda_max: Upper bound on :math:`\\lambda(t)` over ``[0, T]``.
-            Required for :meth:`sample` via thinning. If ``None``,
-            thinning will raise.
+        integrated_intensity: :math:`\\Lambda(T)`. Pass a fixed value
+            **only** if the intensity is static; during training this
+            cache would go stale. Otherwise leave as ``None`` and the
+            operator will compute Λ(T) from the current
+            ``log_intensity_fn`` on every call — exactly when the
+            intensity module exposes ``.integrate(a, b)``
+            (:class:`PiecewiseConstantLogIntensity` does), via
+            quadrature otherwise.
+        lambda_max: Upper bound on :math:`\\lambda(t)`. Same staleness
+            caveat as ``integrated_intensity``: pass a fixed bound only
+            if you will not mutate the intensity. When ``None``, the
+            operator reads the live bound from
+            ``log_intensity_fn.max_intensity()`` at sample time if the
+            module exposes it; otherwise :meth:`sample` raises.
         n_integration_points: Static grid size used by every method
-            that needs quadrature. Override once here rather than
-            plumbing kwargs through every call.
+            that falls back to quadrature. Override once here rather
+            than plumbing kwargs through every call.
 
     Note:
         ``log_intensity_fn`` is stored as a regular PyTree leaf — **not**
@@ -343,20 +391,84 @@ class InhomogeneousPoissonProcess(eqx.Module):
         """
         bin_edges_arr = jnp.asarray(bin_edges)
         rates_arr = jnp.asarray(rates)
-        widths = jnp.diff(bin_edges_arr)
-        integrated = jnp.sum(widths * rates_arr)
-        lam_max = jnp.max(rates_arr)
 
         log_intensity_fn = PiecewiseConstantLogIntensity(
             bin_edges=bin_edges_arr, rates=rates_arr
         )
 
+        # Leave ``integrated_intensity`` / ``lambda_max`` as ``None`` so
+        # the operator queries the live values from the intensity
+        # module on every call. This is what lets gradient-based
+        # training of ``log_rates`` see a correct ``-Λ(T)`` term and
+        # keeps the thinning envelope tight after updates.
         return cls(
             log_intensity_fn,
             observation_window=bin_edges_arr[-1],
-            integrated_intensity=integrated,
-            lambda_max=lam_max,
+            integrated_intensity=None,
+            lambda_max=None,
             **kwargs,
+        )
+
+    # ------------------------------------------------------------
+    # Live-value accessors
+    # ------------------------------------------------------------
+
+    def effective_integrated_intensity(
+        self,
+        a: ArrayLike | None = None,
+        b: ArrayLike | None = None,
+    ) -> Float[Array, ...]:
+        """Return :math:`\\Lambda(b) - \\Lambda(a)` using live leaves.
+
+        Precedence: (1) use :attr:`integrated_intensity` if the caller
+        pinned a fixed endpoint-to-endpoint value and is asking for the
+        default ``[0, T]`` interval; (2) otherwise use
+        ``log_intensity_fn.integrate(a, b)`` when the module exposes it
+        (exact closed form, differentiable); (3) otherwise fall back to
+        quadrature with ``n_integration_points`` nodes. Never reads a
+        cached value for non-default intervals, since the cache holds
+        only :math:`\\Lambda(T)`.
+
+        Args:
+            a: Lower limit (default ``0``).
+            b: Upper limit (default :attr:`observation_window`).
+        """
+        a_arr = jnp.zeros_like(self.observation_window) if a is None else jnp.asarray(a)
+        b_arr = self.observation_window if b is None else jnp.asarray(b)
+        default_interval = a is None and b is None
+
+        if default_interval and self.integrated_intensity is not None:
+            return self.integrated_intensity
+        integrate = getattr(self.log_intensity_fn, "integrate", None)
+        if integrate is not None:
+            return integrate(a_arr, b_arr)
+        return ipp_predict_count(
+            a_arr,
+            b_arr,
+            self.log_intensity_fn,
+            n_points=self.n_integration_points,
+        )
+
+    def effective_lambda_max(self) -> Float[Array, ...]:
+        """Return the current thinning bound.
+
+        Prefers the pinned :attr:`lambda_max` (if set) over anything
+        derived from the module. Otherwise calls
+        ``log_intensity_fn.max_intensity()`` and raises if neither is
+        available. Reading the module every call keeps thinning
+        samplers safe after ``log_rates`` has been updated by an
+        optimiser.
+        """
+        if self.lambda_max is not None:
+            return self.lambda_max
+        max_intensity = getattr(self.log_intensity_fn, "max_intensity", None)
+        if max_intensity is not None:
+            return max_intensity()
+        raise ValueError(
+            "Cannot sample via thinning: no lambda_max pinned on the "
+            "operator and log_intensity_fn has no .max_intensity() "
+            "method. Pass a bound at construction, use a module that "
+            "exposes it, or call sample_inversion instead."
         )
 
     # ------------------------------------------------------------
@@ -370,19 +482,11 @@ class InhomogeneousPoissonProcess(eqx.Module):
     ) -> Float[Array, ...]:
         """Log-likelihood :math:`\\sum_i \\log \\lambda(t_i) - \\Lambda(T)`.
 
-        If ``integrated_intensity`` was not supplied at construction,
-        it is computed on the fly by quadrature with
-        ``n_integration_points`` nodes.
+        Uses :meth:`effective_integrated_intensity` so that gradients
+        through the intensity module's parameters flow into both the
+        sum-of-log-intensities and the :math:`-\\Lambda(T)` term.
         """
-        if self.integrated_intensity is None:
-            Lambda_T = ipp_predict_count(
-                0.0,
-                self.observation_window,
-                self.log_intensity_fn,
-                n_points=self.n_integration_points,
-            )
-        else:
-            Lambda_T = self.integrated_intensity
+        Lambda_T = self.effective_integrated_intensity()
         return ipp_log_prob(event_times, mask, self.log_intensity_fn, Lambda_T)
 
     def sample(
@@ -390,17 +494,19 @@ class InhomogeneousPoissonProcess(eqx.Module):
         key: PRNGKeyArray,
         max_candidates: int,
     ) -> tuple[Float[Array, ...], Bool[Array, ...], Int[Array, ...]]:
-        """Thinning-based sampler. ``lambda_max`` must be set."""
-        if self.lambda_max is None:
-            raise ValueError(
-                "Cannot sample via thinning without lambda_max; "
-                "pass it at construction time or use sample_inversion."
-            )
+        """Thinning-based sampler.
+
+        Uses :meth:`effective_lambda_max` so that, after an optimiser
+        update to the intensity module's parameters, the thinning
+        envelope still exceeds the live ``λ(t)`` and the sampler
+        remains valid.
+        """
+        lam_max = self.effective_lambda_max()
         return ipp_sample_thinning(
             key,
             self.log_intensity_fn,
             self.observation_window,
-            self.lambda_max,
+            lam_max,
             max_candidates,
         )
 
@@ -411,15 +517,7 @@ class InhomogeneousPoissonProcess(eqx.Module):
         max_events: int,
     ) -> tuple[Float[Array, ...], Bool[Array, ...], Int[Array, ...]]:
         """Exact sampler when the inverse compensator is available."""
-        if self.integrated_intensity is None:
-            Lambda_T = ipp_predict_count(
-                0.0,
-                self.observation_window,
-                self.log_intensity_fn,
-                n_points=self.n_integration_points,
-            )
-        else:
-            Lambda_T = self.integrated_intensity
+        Lambda_T = self.effective_integrated_intensity()
         return ipp_sample_inversion(
             key, inverse_cumulative_intensity_fn, Lambda_T, max_events
         )
@@ -433,7 +531,27 @@ class InhomogeneousPoissonProcess(eqx.Module):
         return ipp_intensity(t, self.log_intensity_fn)
 
     def cumulative_intensity(self, t: Float[Array, ...]) -> Float[Array, ...]:
-        """Compensator :math:`\\Lambda(t)` via quadrature."""
+        """Compensator :math:`\\Lambda(t) = \\int_0^t \\lambda(s) ds`.
+
+        Prefers the intensity module's closed-form ``.integrate`` when
+        available, falling back to quadrature otherwise. This keeps
+        diagnostics (residuals, compensator curve) consistent with
+        :meth:`log_prob` after the intensity parameters have been
+        updated.
+        """
+        t = jnp.asarray(t)
+        integrate = getattr(self.log_intensity_fn, "integrate", None)
+        if integrate is not None:
+            zeros = jnp.zeros_like(t)
+            # Vectorise the module's ``integrate(a, b)`` over ``t``
+            # whenever it is a non-scalar — the closed form accepts
+            # scalars in its native form.
+            if t.ndim == 0:
+                return integrate(zeros, t)
+            flat_t = t.reshape(-1)
+            flat_zeros = jnp.zeros_like(flat_t)
+            vals = jax.vmap(integrate)(flat_zeros, flat_t)
+            return vals.reshape(t.shape)
         return ipp_cumulative_intensity(
             t, self.log_intensity_fn, n_points=self.n_integration_points
         )
