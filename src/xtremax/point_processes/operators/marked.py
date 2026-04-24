@@ -137,13 +137,11 @@ class MarkedTemporalPointProcess(eqx.Module):
         # for a thinning-based ground sampler).
         ground_result = self.ground.sample(key_ground, max_events, **ground_kwargs)
         times, mask, _ = ground_result
-        mark_shape = () if self.mark_dim is None else (self.mark_dim,)
         marks = sample_marks_at_times(
             key_marks,
             times,
             mask,
             self.mark_distribution_fn,
-            mark_shape=mark_shape,
             history_at_each_event=self.history_at_each_event,
         )
         return times, mask, marks

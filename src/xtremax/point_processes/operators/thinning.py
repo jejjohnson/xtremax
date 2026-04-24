@@ -148,17 +148,15 @@ class ThinningProcess(eqx.Module):
         """
         base_logp = self._call_base_log_prob(event_times, mask, marks=marks)
 
-        history = EventHistory(
-            times=event_times,
-            mask=mask,
-            marks=marks
-            if (
-                marks is not None
-                and marks.ndim >= 1
-                and marks.shape[-1] != mask.shape[-1]
+        # Promote scalar marks to 2-D inside EventHistory so that
+        # history-dependent retention callables can uniformly look at
+        # ``history.marks`` without branching on dimensionality.
+        history_marks = None
+        if marks is not None:
+            history_marks = (
+                jnp.expand_dims(marks, axis=-1) if marks.ndim == mask.ndim else marks
             )
-            else None,
-        )
+        history = EventHistory(times=event_times, mask=mask, marks=history_marks)
         retention_term = thinning_retention_log_prob(
             self.retention_fn, event_times, mask, history, marks=marks
         )
@@ -203,61 +201,103 @@ class ThinningProcess(eqx.Module):
         Two-pass draw: (1) draw a full latent realisation from the
         base; (2) for each latent event evaluate the retention
         probability given the *retained* history so far and accept
-        with that probability. This correctly propagates history-
-        dependent retention and keeps the sampler compatible with any
-        base that exposes ``sample(key, max_events)``.
+        with that probability. This correctly propagates history- and
+        mark-dependent retention. ``max_candidates`` is forwarded to
+        the base's own sampler for families (Hawkes, IPP) that use
+        thinning internally.
         """
         key_base, key_thin = jax.random.split(key)
 
-        base_result = self.base.sample(key_base, max_events, **base_kwargs)
-        if len(base_result) == 3:
-            latent_times, latent_mask, _ = base_result
-            latent_marks = None
+        base_sample_kwargs = dict(base_kwargs)
+        if max_candidates is not None:
+            base_sample_kwargs["max_candidates"] = max_candidates
+        base_result = self.base.sample(key_base, max_events, **base_sample_kwargs)
+
+        # Disambiguate the 3-tuple result. IPP / HPP / Hawkes / Renewal
+        # return ``(times, mask, n_events)`` — a 0-D integer count in
+        # slot 3. Marked processes return ``(times, mask, marks)`` with
+        # an array aligned with ``times``. Anything else (e.g. a future
+        # operator returning ``(times, mask, aux_struct, marks)``) takes
+        # the last entry as marks.
+        latent_marks = None
+        if len(base_result) == 2:
+            latent_times, latent_mask = base_result
+        elif len(base_result) == 3:
+            latent_times, latent_mask, third = base_result
+            third_arr = jnp.asarray(third)
+            if third_arr.ndim == 0 and jnp.issubdtype(third_arr.dtype, jnp.integer):
+                latent_marks = None
+            else:
+                latent_marks = third
         else:
-            latent_times, latent_mask, latent_marks = base_result
+            latent_times, latent_mask = base_result[:2]
+            latent_marks = base_result[-1]
 
         keys = jax.random.split(key_thin, latent_times.shape[-1])
 
-        def step(
-            carry: EventHistory,
-            inp: tuple[Float[Array, ...], Bool[Array, ...], PRNGKeyArray, Array],
-        ) -> tuple[EventHistory, None]:
-            t_i, valid_i, key_i, mark_i = inp
-            p = self.retention_fn(t_i, carry, mark_i)
-            u = jax.random.uniform(key_i, dtype=t_i.dtype)
-            accepted = valid_i & (u < jnp.clip(p, 0.0, 1.0))
-            new_history = carry.append(
-                t_i, mark=mark_i if carry.marks is not None else None, accepted=accepted
+        if latent_marks is None:
+            # Plain times + mask scan; retention gets no proposed_mark.
+            def step_unmarked(
+                carry: EventHistory,
+                inp: tuple[Array, Array, PRNGKeyArray],
+            ) -> tuple[EventHistory, None]:
+                t_i, valid_i, key_i = inp
+                p = self.retention_fn(t_i, carry, None)
+                u = jax.random.uniform(key_i, dtype=t_i.dtype)
+                accepted = valid_i & (u < jnp.clip(p, 0.0, 1.0))
+                new_history = carry.append(t_i, accepted=accepted)
+                return new_history, None
+
+            initial_history = EventHistory.empty(
+                max_events=max_events, mark_dim=None, dtype=latent_times.dtype
             )
-            return new_history, None
+            final_history, _ = jax.lax.scan(
+                step_unmarked,
+                initial_history,
+                (
+                    jnp.moveaxis(latent_times, -1, 0),
+                    jnp.moveaxis(latent_mask, -1, 0),
+                    keys,
+                ),
+            )
+        else:
+            # Marked base: thread both the proposed mark into the
+            # retention evaluation and the retained marks into the
+            # carry's history buffer.
+            latent_marks_2d = (
+                latent_marks if latent_marks.ndim == 2 else latent_marks[..., None]
+            )
+            mark_dim = latent_marks_2d.shape[-1]
 
-        mark_dtype = latent_times.dtype
-        dummy_marks = (
-            jnp.zeros((max_events,), dtype=mark_dtype)
-            if latent_marks is None
-            else latent_marks
-        )
+            def step_marked(
+                carry: EventHistory,
+                inp: tuple[Array, Array, PRNGKeyArray, Array],
+            ) -> tuple[EventHistory, None]:
+                t_i, valid_i, key_i, mark_row = inp
+                # Pass the user a mark in their original shape (scalar
+                # if marks were originally 1-D).
+                proposed_mark = mark_row[0] if latent_marks.ndim == 1 else mark_row
+                p = self.retention_fn(t_i, carry, proposed_mark)
+                u = jax.random.uniform(key_i, dtype=t_i.dtype)
+                accepted = valid_i & (u < jnp.clip(p, 0.0, 1.0))
+                new_history = carry.append(t_i, mark=mark_row, accepted=accepted)
+                return new_history, None
 
-        initial_history = EventHistory.empty(
-            max_events=max_events,
-            mark_dim=(
-                None
-                if latent_marks is None
-                else (1 if latent_marks.ndim == 1 else latent_marks.shape[-1])
-            ),
-            dtype=mark_dtype,
-        )
-
-        final_history, _ = jax.lax.scan(
-            step,
-            initial_history,
-            (
-                jnp.moveaxis(latent_times, -1, 0),
-                jnp.moveaxis(latent_mask, -1, 0),
-                keys,
-                jnp.moveaxis(dummy_marks, -1, 0),
-            ),
-        )
+            initial_history = EventHistory.empty(
+                max_events=max_events,
+                mark_dim=mark_dim,
+                dtype=latent_times.dtype,
+            )
+            final_history, _ = jax.lax.scan(
+                step_marked,
+                initial_history,
+                (
+                    jnp.moveaxis(latent_times, -1, 0),
+                    jnp.moveaxis(latent_mask, -1, 0),
+                    keys,
+                    jnp.moveaxis(latent_marks_2d, -2, 0),
+                ),
+            )
 
         n_retained = jnp.sum(final_history.mask).astype(jnp.int32)
         times = jnp.where(

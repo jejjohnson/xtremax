@@ -100,51 +100,91 @@ def sample_marks_at_times(
     event_times: Float[Array, ...],
     mask: Bool[Array, ...],
     mark_distribution_fn: Callable[[Array, EventHistory], dist.Distribution],
-    mark_shape: tuple[int, ...] = (),
     history_at_each_event: bool = True,
 ) -> Float[Array, ...]:
     """Draw marks ``mᵢ ~ f(· | tᵢ, Hᵢ)`` at each observed time.
+
+    When ``history_at_each_event=True`` sampling is sequential: each
+    draw's history pytree includes the previously drawn marks, so mark
+    distributions can legitimately depend on both past times and past
+    marks. When ``False`` a single ``vmap`` fans the draws out in
+    parallel and the mark distribution is evaluated against the full
+    observed history with ``marks=None`` — cheaper, but only correct
+    for mark laws that do not look at prior marks.
 
     Args:
         key: JAX PRNG key.
         event_times: Padded event times.
         mask: Event mask.
         mark_distribution_fn: Mark distribution callable.
-        mark_shape: Event shape of each mark (``()`` for scalar,
-            ``(d,)`` for vector).
-        history_at_each_event: Same semantics as in
-            :func:`marks_log_prob`.
+        history_at_each_event: See above.
 
     Returns:
-        Array of marks shaped ``event_times.shape + mark_shape``,
-        padded with zeros at non-event positions.
+        Array of marks shaped ``event_times.shape`` for scalar marks or
+        ``event_times.shape + (mark_dim,)`` for vector marks, with
+        padding positions zeroed out.
     """
     n_max = event_times.shape[-1]
     keys = random.split(key, n_max)
 
-    if history_at_each_event:
-        idx_grid = jnp.arange(n_max)
-
-        def per_event(i: Int[Array, ...], k: PRNGKeyArray) -> Array:
-            before_i = (idx_grid < i) & mask
-            h_i = EventHistory(
-                times=jnp.where(before_i, event_times, 0.0),
-                mask=before_i,
-                marks=None,
-            )
-            d = mark_distribution_fn(event_times[i], h_i)
-            return d.sample(k)
-
-    else:
+    if not history_at_each_event:
         full_history = EventHistory(times=event_times, mask=mask, marks=None)
 
         def per_event(i: Int[Array, ...], k: PRNGKeyArray) -> Array:
             d = mark_distribution_fn(event_times[i], full_history)
             return d.sample(k)
 
+        idx = jnp.arange(n_max)
+        marks = jax.vmap(per_event)(idx, keys)
+        if marks.ndim == mask.ndim:
+            return jnp.where(mask, marks, 0.0)
+        return jnp.where(mask[..., None], marks, 0.0)
+
+    # Sequential path: probe the mark dist once on an empty history so
+    # we know the mark shape/dtype, preallocate a 2-D marks buffer on
+    # the carry (scalar marks get a trailing ``1`` to keep the buffer
+    # uniformly 2-D), and scan. Each step appends the drawn mark to the
+    # carry so subsequent steps can condition on ``history.marks``.
+    empty_history = EventHistory.empty(max_events=n_max, dtype=event_times.dtype)
+    probe_spec = jax.eval_shape(
+        lambda et, k: mark_distribution_fn(et, empty_history).sample(k),
+        event_times[0],
+        keys[0],
+    )
+    mark_event_shape = probe_spec.shape
+    mark_dtype = probe_spec.dtype
+    is_scalar_mark = len(mark_event_shape) == 0
+    mark_dim = 1 if is_scalar_mark else mark_event_shape[-1]
+    initial_carry = EventHistory(
+        times=jnp.zeros_like(event_times),
+        mask=jnp.zeros_like(mask),
+        marks=jnp.zeros((n_max, mark_dim), dtype=mark_dtype),
+    )
+
+    def step(
+        carry: EventHistory, inp: tuple[Int[Array, ...], PRNGKeyArray]
+    ) -> tuple[EventHistory, Array]:
+        i, k = inp
+        d = mark_distribution_fn(event_times[i], carry)
+        m = d.sample(k)
+        m_row = jnp.expand_dims(m, axis=-1) if is_scalar_mark else m
+
+        valid_i = mask[i]
+        new_times = carry.times.at[i].set(
+            jnp.where(valid_i, event_times[i], carry.times[i])
+        )
+        new_mask = carry.mask.at[i].set(
+            jnp.where(valid_i, jnp.bool_(True), carry.mask[i])
+        )
+        zero_row = jnp.zeros_like(m_row)
+        new_marks_row = jnp.where(valid_i, m_row, zero_row)
+        new_marks = carry.marks.at[i].set(new_marks_row)
+        new_carry = EventHistory(times=new_times, mask=new_mask, marks=new_marks)
+
+        # Emitted per-step mark (in the user's original scalar/vector shape).
+        emitted = jnp.where(valid_i, m, jnp.zeros_like(m))
+        return new_carry, emitted
+
     idx = jnp.arange(n_max)
-    marks = jax.vmap(per_event)(idx, keys)
-    # Zero-out padding positions for cleanliness.
-    if marks.ndim == mask.ndim:
-        return jnp.where(mask, marks, 0.0)
-    return jnp.where(mask[..., None], marks, 0.0)
+    _, marks = jax.lax.scan(step, initial_carry, (idx, keys))
+    return marks

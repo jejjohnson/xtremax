@@ -20,7 +20,7 @@ this with an adaptive-envelope variant:
 the current :class:`EventHistory`. Hawkes, ThinningProcess, and any
 future history-dependent family can delegate to it.
 
-:func:`thinning_log_compensator` computes
+:func:`retention_compensator` computes
 :math:`\\int_0^T (1 - p(t|H(t)))\\lambda(t|H(t))\\, dt` used by
 thinning-of-base log-likelihoods.
 """
@@ -91,10 +91,17 @@ def thinning_sample(
         t_prev, history, consumed = carry
         key_dt, key_u = random.split(key_i)
 
-        lambda_bar = lambda_max_fn(history)
-        # Exp(λ_bar) draw with a log1p-safe form (``u`` is in (0, 1]).
+        # Guard λ_bar against 0 so ``dt`` can never be ``+inf``; a zero
+        # upper bound is only reachable when the user supplies an
+        # identically-zero process, in which case a tiny effective rate
+        # still overshoots ``T`` on the first step and terminates.
+        lambda_bar = jnp.maximum(lambda_max_fn(history), 1e-30)
+        # Exp(λ_bar) draw with a log1p-safe form (``u`` is in (0, 1)).
+        # Clip both ends away from 0 / 1: ``u == 0`` would give
+        # ``dt == 0`` (duplicate times), and ``u == 1`` gives ``-inf``.
         u1 = random.uniform(key_dt, dtype=T_arr.dtype)
-        dt = -jnp.log1p(-jnp.clip(u1, 0.0, 1.0 - 1e-7)) / lambda_bar
+        u1 = jnp.clip(u1, 1e-7, 1.0 - 1e-7)
+        dt = -jnp.log1p(-u1) / lambda_bar
         t_new = t_prev + dt
 
         in_window = t_new < T_arr
@@ -126,6 +133,27 @@ def thinning_sample(
     return times, final_history.mask, n_proposals
 
 
+def _prefix_history(history: EventHistory, keep: Bool[Array, ...]) -> EventHistory:
+    """Return a copy of ``history`` with ``mask`` restricted to ``keep``.
+
+    Used by the retention primitives to evaluate callables against a
+    "history up to t" view without copying the underlying arrays. The
+    times and marks buffers themselves are zeroed at filtered-out
+    positions so a retention callable that accidentally looks past the
+    mask does not read stale data.
+    """
+    new_mask = history.mask & keep
+    new_times = jnp.where(new_mask, history.times, jnp.zeros_like(history.times))
+    if history.marks is None:
+        new_marks = None
+    else:
+        mask_broadcast = new_mask[..., None] if history.marks.ndim == 2 else new_mask
+        new_marks = jnp.where(
+            mask_broadcast, history.marks, jnp.zeros_like(history.marks)
+        )
+    return EventHistory(times=new_times, mask=new_mask, marks=new_marks)
+
+
 def retention_compensator(
     retention_fn: Callable[[Array, EventHistory, Array | None], Array],
     conditional_intensity_fn: Callable[[Array, EventHistory], Array],
@@ -133,20 +161,20 @@ def retention_compensator(
     T: Float[Array, ...],
     n_points: int = 100,
 ) -> Float[Array, ...]:
-    r"""Compute :math:`\int_0^T (1 - p(t|H))\,\lambda(t|H)\, dt` via trapezoid.
+    r"""Compute :math:`\int_0^T (1 - p(t|H(t)))\,\lambda(t|H(t))\, dt` via trapezoid.
 
     Used by :class:`~xtremax.point_processes.operators.ThinningProcess`
     to correct the thinned-process log-likelihood by the expected
-    compensator of the *discarded* events. The history passed in is the
-    full observed (retained) history — retention and intensity both
-    evaluate against it as the history-at-time-``t`` (a mild
-    approximation for history-dependent retention that in practice
-    tracks well because retention is typically smooth in ``t``).
+    compensator of the *discarded* events. At each quadrature node ``t``
+    the retention and intensity callables see only the observed events
+    with ``time < t``, so a history-dependent retention never
+    "peeks" at events in the future of its query point.
 
     Args:
         retention_fn: Retention callable.
         conditional_intensity_fn: Intensity callable.
-        history: Observed history to condition on.
+        history: Observed (retained) history. Filtered per-``t`` to the
+            prefix ``{i : times[i] < t}`` inside this routine.
         T: Window upper limit.
         n_points: Trapezoid grid size (static Python int).
 
@@ -157,8 +185,12 @@ def retention_compensator(
     grid = jnp.linspace(jnp.zeros_like(T_arr), T_arr, n_points)
 
     def integrand(t: Array) -> Array:
-        p = retention_fn(t, history, None)
-        lam = conditional_intensity_fn(t, history)
+        prefix = _prefix_history(history, history.times < t)
+        # Clip ``p`` into [0, 1] so a badly-behaved retention (e.g.
+        # numerical over/undershoot at grid points) cannot flip the
+        # compensator sign.
+        p = jnp.clip(retention_fn(t, prefix, None), 0.0, 1.0)
+        lam = conditional_intensity_fn(t, prefix)
         return (1.0 - p) * lam
 
     values = jax.vmap(integrand)(grid)
@@ -174,26 +206,32 @@ def thinning_retention_log_prob(
 ) -> Float[Array, ...]:
     """Sum of ``log p(tᵢ | Hᵢ, mᵢ)`` over retained events.
 
+    At each event index ``i`` the retention callable sees only events
+    ``{j : j < i}`` in the history — so the contract
+    :math:`p(t_i \\mid \\mathcal{H}_i, m_i)` is honoured exactly, even
+    for history-dependent retention.
+
     Args:
         retention_fn: Retention callable.
         event_times: Observed times (padded).
         mask: Observed mask.
-        history: The history to condition on. Most common choice is the
-            observed-events history itself — see the operator layer,
-            which builds that automatically.
+        history: The full observed history. Restricted per-event to the
+            prefix ``{j : j < i}`` inside this routine.
         marks: Optional marks aligned with ``event_times``; passed to
             ``retention_fn`` as ``proposed_mark`` at each position.
 
     Returns:
         Scalar sum; padding positions contribute ``0`` via the mask.
     """
+    n = event_times.shape[-1]
+    index_grid = jnp.arange(n)
 
     def eval_at(i: Int[Array, ...]) -> Float[Array, ...]:
+        prefix = _prefix_history(history, index_grid < i)
         t_i = event_times[i]
         mark_i = None if marks is None else marks[i]
-        return retention_fn(t_i, history, mark_i)
+        return retention_fn(t_i, prefix, mark_i)
 
-    idx = jnp.arange(event_times.shape[-1])
-    probs = jax.vmap(eval_at)(idx)
+    probs = jax.vmap(eval_at)(index_grid)
     log_p = jnp.log(jnp.clip(probs, 1e-30, 1.0))
     return jnp.sum(jnp.where(mask, log_p, 0.0), axis=-1)
