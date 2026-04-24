@@ -1,0 +1,199 @@
+"""Generic Ogata thinning sampler and retention primitives.
+
+The Lewis–Shedler sampler already in :mod:`~xtremax.point_processes.primitives.ipp`
+is specialised to the Inhomogeneous Poisson case with a *global* upper
+bound :math:`\\lambda_{\\max}` over the whole window. For self-exciting
+processes (Hawkes) and for thinning-of-base constructions, the upper
+bound depends on the history accumulated so far. Ogata (1981) handles
+this with an adaptive-envelope variant:
+
+1. Start with an empty history and :math:`t = 0`.
+2. Compute a history-dependent upper bound :math:`\\bar\\lambda`.
+3. Draw an inter-arrival :math:`\\Delta t \\sim \\mathrm{Exp}(\\bar\\lambda)`;
+   set :math:`t \\leftarrow t + \\Delta t`.
+4. Accept :math:`t` with probability
+   :math:`\\lambda^*(t \\mid H) / \\bar\\lambda`; append to history if so.
+5. Repeat until :math:`t \\geq T` or the proposal buffer is exhausted.
+
+:func:`thinning_sample` is a generic implementation: it takes a
+``conditional_intensity_fn`` and a ``lambda_max_fn`` that both receive
+the current :class:`EventHistory`. Hawkes, ThinningProcess, and any
+future history-dependent family can delegate to it.
+
+:func:`thinning_log_compensator` computes
+:math:`\\int_0^T (1 - p(t|H(t)))\\lambda(t|H(t))\\, dt` used by
+thinning-of-base log-likelihoods.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+import jax
+import jax.numpy as jnp
+from jax import random
+from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
+
+from xtremax.point_processes._history import EventHistory
+
+
+def thinning_sample(
+    key: PRNGKeyArray,
+    conditional_intensity_fn: Callable[[Array, EventHistory], Array],
+    lambda_max_fn: Callable[[EventHistory], Array],
+    T: Float[Array, ...],
+    max_events: int,
+    max_candidates: int | None = None,
+    initial_history: EventHistory | None = None,
+) -> tuple[Float[Array, ...], Bool[Array, ...], Int[Array, ...]]:
+    """Sample a history-dependent temporal point process via Ogata thinning.
+
+    Args:
+        key: JAX PRNG key.
+        conditional_intensity_fn: Callable ``(t, history) -> λ*(t | H)``.
+            ``history`` is the :class:`EventHistory` accumulated *before*
+            ``t``; callers must not peek at anything at or after ``t``.
+        lambda_max_fn: Callable ``history -> λ_bar``. Must return a
+            scalar ``>=`` the supremum of ``conditional_intensity_fn``
+            over the remaining window ``[last_time, T]`` given the
+            current history. Over-estimates are safe (lose efficiency);
+            under-estimates break the sampler.
+        T: Observation window length (scalar).
+        max_events: Static cap on the number of accepted events.
+        max_candidates: Static cap on the number of proposals. Defaults
+            to ``4 * max_events`` if ``None``. Choose comfortably above
+            the expected count to avoid truncation under low acceptance.
+        initial_history: Optional starting history. Defaults to an
+            empty buffer of size ``max_events``.
+
+    Returns:
+        Tuple ``(times, mask, n_proposals)``:
+
+        * ``times`` with shape ``(max_events,)`` — sorted, padding
+          positions filled with ``T``.
+        * ``mask`` — ``True`` at accepted positions.
+        * ``n_proposals`` — number of thinning proposals actually
+          consumed (useful for diagnosing buffer over-runs).
+    """
+    T_arr = jnp.asarray(T)
+    if max_candidates is None:
+        max_candidates = 4 * max_events
+
+    if initial_history is None:
+        initial_history = EventHistory.empty(max_events=max_events, dtype=T_arr.dtype)
+
+    keys = random.split(key, max_candidates)
+
+    def step(
+        carry: tuple[Float[Array, ...], EventHistory, Int[Array, ...]],
+        key_i: PRNGKeyArray,
+    ) -> tuple[tuple[Float[Array, ...], EventHistory, Int[Array, ...]], None]:
+        t_prev, history, consumed = carry
+        key_dt, key_u = random.split(key_i)
+
+        lambda_bar = lambda_max_fn(history)
+        # Exp(λ_bar) draw with a log1p-safe form (``u`` is in (0, 1]).
+        u1 = random.uniform(key_dt, dtype=T_arr.dtype)
+        dt = -jnp.log1p(-jnp.clip(u1, 0.0, 1.0 - 1e-7)) / lambda_bar
+        t_new = t_prev + dt
+
+        in_window = t_new < T_arr
+        lambda_new = conditional_intensity_fn(t_new, history)
+        u2 = random.uniform(key_u, dtype=T_arr.dtype)
+        accepted = in_window & (u2 * lambda_bar < lambda_new)
+
+        new_history = history.append(t_new, accepted=accepted)
+        # Always advance to the new proposal; once past ``T`` subsequent
+        # proposals stay outside the window and ``in_window`` stays
+        # ``False``, naturally stopping acceptance. Resetting to
+        # ``t_prev`` on overshoot would let the sampler re-propose into
+        # the window and double-count events near the right edge.
+        t_out = t_new
+        # Consumed counts proposals actually processed (i.e. within [0, T]).
+        new_consumed = consumed + in_window.astype(consumed.dtype)
+        return (t_out, new_history, new_consumed), None
+
+    initial = (
+        jnp.asarray(0.0, dtype=T_arr.dtype),
+        initial_history,
+        jnp.asarray(0, dtype=jnp.int32),
+    )
+    (_, final_history, n_proposals), _ = jax.lax.scan(step, initial, keys)
+
+    # Final pass: pad padding positions with T so downstream intensity
+    # evaluations stay inside the window.
+    times = jnp.where(final_history.mask, final_history.times, T_arr)
+    return times, final_history.mask, n_proposals
+
+
+def retention_compensator(
+    retention_fn: Callable[[Array, EventHistory, Array | None], Array],
+    conditional_intensity_fn: Callable[[Array, EventHistory], Array],
+    history: EventHistory,
+    T: Float[Array, ...],
+    n_points: int = 100,
+) -> Float[Array, ...]:
+    r"""Compute :math:`\int_0^T (1 - p(t|H))\,\lambda(t|H)\, dt` via trapezoid.
+
+    Used by :class:`~xtremax.point_processes.operators.ThinningProcess`
+    to correct the thinned-process log-likelihood by the expected
+    compensator of the *discarded* events. The history passed in is the
+    full observed (retained) history — retention and intensity both
+    evaluate against it as the history-at-time-``t`` (a mild
+    approximation for history-dependent retention that in practice
+    tracks well because retention is typically smooth in ``t``).
+
+    Args:
+        retention_fn: Retention callable.
+        conditional_intensity_fn: Intensity callable.
+        history: Observed history to condition on.
+        T: Window upper limit.
+        n_points: Trapezoid grid size (static Python int).
+
+    Returns:
+        Scalar integral.
+    """
+    T_arr = jnp.asarray(T)
+    grid = jnp.linspace(jnp.zeros_like(T_arr), T_arr, n_points)
+
+    def integrand(t: Array) -> Array:
+        p = retention_fn(t, history, None)
+        lam = conditional_intensity_fn(t, history)
+        return (1.0 - p) * lam
+
+    values = jax.vmap(integrand)(grid)
+    return jnp.trapezoid(values, grid)
+
+
+def thinning_retention_log_prob(
+    retention_fn: Callable[[Array, EventHistory, Array | None], Array],
+    event_times: Float[Array, ...],
+    mask: Bool[Array, ...],
+    history: EventHistory,
+    marks: Float[Array, ...] | None = None,
+) -> Float[Array, ...]:
+    """Sum of ``log p(tᵢ | Hᵢ, mᵢ)`` over retained events.
+
+    Args:
+        retention_fn: Retention callable.
+        event_times: Observed times (padded).
+        mask: Observed mask.
+        history: The history to condition on. Most common choice is the
+            observed-events history itself — see the operator layer,
+            which builds that automatically.
+        marks: Optional marks aligned with ``event_times``; passed to
+            ``retention_fn`` as ``proposed_mark`` at each position.
+
+    Returns:
+        Scalar sum; padding positions contribute ``0`` via the mask.
+    """
+
+    def eval_at(i: Int[Array, ...]) -> Float[Array, ...]:
+        t_i = event_times[i]
+        mark_i = None if marks is None else marks[i]
+        return retention_fn(t_i, history, mark_i)
+
+    idx = jnp.arange(event_times.shape[-1])
+    probs = jax.vmap(eval_at)(idx)
+    log_p = jnp.log(jnp.clip(probs, 1e-30, 1.0))
+    return jnp.sum(jnp.where(mask, log_p, 0.0), axis=-1)
