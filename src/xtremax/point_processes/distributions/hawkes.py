@@ -124,9 +124,8 @@ class GeneralHawkesProcess(dist.Distribution):
             n_integration_points=n_integration_points,
             max_kernel_value=max_kernel_value,
         )
-        super().__init__(
-            batch_shape=self.observation_window.shape, validate_args=validate_args
-        )
+        batch_shape = jnp.broadcast_shapes(self.mu.shape, self.observation_window.shape)
+        super().__init__(batch_shape=batch_shape, validate_args=validate_args)
 
     @property
     def max_events(self) -> int:

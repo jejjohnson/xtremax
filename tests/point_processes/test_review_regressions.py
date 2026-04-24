@@ -127,12 +127,13 @@ class TestThinningMarkedBaseRoutesMarks:
         )
         gate = MagnitudeGate(cutoff=jnp.asarray(0.3))
         thin = ThinningProcess(base=mtpp, retention_fn=gate)
-        _t, _m, n_retained = thin.sample(jax.random.PRNGKey(0), max_events=64)
+        # Marked base → sample returns (times, mask, retained_marks).
+        _t, retained_mask, _marks = thin.sample(jax.random.PRNGKey(0), max_events=64)
 
         # If marks are routed correctly, the gate should keep most of
         # the draws (mean ≈ 0.5 > 0.3 so retention ≈ 1). If marks get
         # dropped to None, the gate returns 0 and nothing is retained.
-        assert int(n_retained) > 0
+        assert int(jnp.sum(retained_mask)) > 0
 
 
 class TestSampleMarksAtTimesUsesPriorMarks:
@@ -225,3 +226,123 @@ class TestThinningForwardsMaxCandidates:
         # Should not raise — base.sample(max_events, max_candidates=...)
         # is valid for Hawkes.
         _ = thin.sample(jax.random.PRNGKey(0), max_events=32, max_candidates=128)
+
+
+class TestThinningMarkedBaseLogProb:
+    """Codex P1: ThinningProcess.log_prob must accept a marked base."""
+
+    def test_log_prob_routes_through_ground_intensity(self):
+        """A marked base has no ``.intensity`` / ``.rate``; the
+        compensator path must fall through to ``base.ground``.
+        """
+        hpp = HomogeneousPoissonProcess(2.0, 5.0)
+
+        def marks_fn(t, history):
+            return dist.Normal(0.0, 1.0)
+
+        mtpp = MarkedTemporalPointProcess(
+            ground=hpp,
+            mark_distribution_fn=marks_fn,
+            mark_dim=None,
+            history_at_each_event=False,
+        )
+
+        def retention(t, history, mark=None):
+            return jnp.asarray(0.6)
+
+        thin = ThinningProcess(base=mtpp, retention_fn=retention)
+        t, m, marks = mtpp.sample(jax.random.PRNGKey(0), max_events=64)
+        # Before the _base_intensity_fn fallback to ``base.ground``,
+        # this raised AttributeError.
+        ll = float(thin.log_prob(t, m, marks=marks))
+        assert jnp.isfinite(ll)
+
+
+class TestThinningSampleReturnsMarks:
+    """Codex P2: thinning a marked base must surface retained marks."""
+
+    def test_operator_sample_returns_marks_for_marked_base(self):
+        hpp = HomogeneousPoissonProcess(3.0, 5.0)
+
+        def marks_fn(t, history):
+            return dist.Normal(0.0, 1.0)
+
+        mtpp = MarkedTemporalPointProcess(
+            ground=hpp,
+            mark_distribution_fn=marks_fn,
+            mark_dim=None,
+            history_at_each_event=False,
+        )
+
+        def retention(t, history, mark=None):
+            return jnp.asarray(1.0)
+
+        thin = ThinningProcess(base=mtpp, retention_fn=retention)
+        t, _m, third = thin.sample(jax.random.PRNGKey(0), max_events=64)
+        # With retention=1 the third slot is the retained-marks array,
+        # not a scalar count.
+        third_arr = jnp.asarray(third)
+        assert third_arr.ndim >= 1
+        assert third_arr.shape[-1] == t.shape[-1]
+
+    def test_distribution_round_trip_with_marked_base(self):
+        from xtremax.point_processes.distributions import (
+            ThinningProcess as ThinningDist,
+        )
+
+        hpp = HomogeneousPoissonProcess(3.0, 5.0)
+
+        def marks_fn(t, history):
+            return dist.Normal(0.0, 1.0)
+
+        mtpp = MarkedTemporalPointProcess(
+            ground=hpp,
+            mark_distribution_fn=marks_fn,
+            mark_dim=None,
+            history_at_each_event=False,
+        )
+
+        def retention(t, history, mark=None):
+            return jnp.asarray(1.0)
+
+        d = ThinningDist(base=mtpp, retention_fn=retention, max_events=64)
+        value = d.sample(jax.random.PRNGKey(0))
+        # Marked base → sample returns (times, mask, marks), so
+        # log_prob(sample(...)) round-trips without having to
+        # reassemble the marks out of band.
+        assert len(value) == 3
+        ll = float(d.log_prob(value))
+        assert jnp.isfinite(ll)
+
+
+class TestRenewalBatchShape:
+    """Codex P2: Renewal batch_shape must include inter-event dims."""
+
+    def test_batch_shape_broadcasts_with_inter_event_batch(self):
+        from xtremax.point_processes.distributions import (
+            RenewalProcess as RenewalDist,
+        )
+
+        # Vmap-style batched rates on the inter-event Exponential.
+        batched_rates = jnp.array([1.0, 2.0, 3.0])
+        d = RenewalDist(
+            dist.Exponential(batched_rates), observation_window=5.0, max_events=64
+        )
+        assert d.batch_shape == (3,)
+
+
+class TestGeneralHawkesBatchShape:
+    """Codex P2: GeneralHawkes batch_shape must include ``mu``."""
+
+    def test_batch_shape_broadcasts_with_mu(self):
+        from xtremax.point_processes.distributions import (
+            GeneralHawkesProcess as GenHawkesDist,
+        )
+        from xtremax.point_processes.operators import ExponentialKernel
+
+        batched_mu = jnp.array([0.3, 0.5, 0.7])
+        kernel = ExponentialKernel(alpha=jnp.asarray(0.3), beta=jnp.asarray(1.0))
+        d = GenHawkesDist(
+            mu=batched_mu, kernel=kernel, observation_window=5.0, max_events=64
+        )
+        assert d.batch_shape == (3,)

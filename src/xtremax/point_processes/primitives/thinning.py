@@ -160,23 +160,47 @@ def retention_compensator(
     history: EventHistory,
     T: Float[Array, ...],
     n_points: int = 100,
+    mark_sampler_fn: Callable[[Array, EventHistory, PRNGKeyArray], Array] | None = None,
+    mark_sample_key: PRNGKeyArray | None = None,
+    n_mark_samples: int = 8,
 ) -> Float[Array, ...]:
-    r"""Compute :math:`\int_0^T (1 - p(t|H(t)))\,\lambda(t|H(t))\, dt` via trapezoid.
+    r"""Compute the retention compensator via trapezoid quadrature.
+
+    :math:`\int_0^T (1 - \bar p(t|H(t)))\,\lambda_g(t|H(t))\, dt`.
 
     Used by :class:`~xtremax.point_processes.operators.ThinningProcess`
     to correct the thinned-process log-likelihood by the expected
-    compensator of the *discarded* events. At each quadrature node ``t``
-    the retention and intensity callables see only the observed events
-    with ``time < t``, so a history-dependent retention never
+    compensator of the *discarded* events. At each quadrature node
+    ``t`` the retention and intensity callables see only the observed
+    events with ``time < t``, so a history-dependent retention never
     "peeks" at events in the future of its query point.
+
+    For **mark-independent** retention (the common case), ``retention_fn``
+    is called as ``retention_fn(t, prefix, None)`` and :math:`\bar p = p`.
+    For **mark-dependent** retention, pass a ``mark_sampler_fn`` that
+    draws one mark from the base's mark distribution given
+    ``(t, prefix, key)``. The retention is then averaged over
+    ``n_mark_samples`` such marks per grid point, yielding a Monte-Carlo
+    estimate of
+    :math:`\bar p(t|H) = \mathbb{E}_{m \sim f(\cdot|t,H)}[p(t|H,m)]`.
+    Without ``mark_sampler_fn``, mark-dependent retention silently
+    receives ``None``; callers who need the mark-averaged correction
+    must supply the sampler explicitly.
 
     Args:
         retention_fn: Retention callable.
-        conditional_intensity_fn: Intensity callable.
+        conditional_intensity_fn: Intensity callable (the **ground**
+            intensity when the base is a marked process — see the
+            operator layer).
         history: Observed (retained) history. Filtered per-``t`` to the
             prefix ``{i : times[i] < t}`` inside this routine.
         T: Window upper limit.
         n_points: Trapezoid grid size (static Python int).
+        mark_sampler_fn: Optional ``(t, prefix, key) -> mark`` for MC
+            marginalisation over marks in mark-dependent retention.
+        mark_sample_key: JAX key used for mark MC; required when
+            ``mark_sampler_fn`` is set.
+        n_mark_samples: Number of mark MC samples per grid point.
 
     Returns:
         Scalar integral.
@@ -184,16 +208,39 @@ def retention_compensator(
     T_arr = jnp.asarray(T)
     grid = jnp.linspace(jnp.zeros_like(T_arr), T_arr, n_points)
 
-    def integrand(t: Array) -> Array:
-        prefix = _prefix_history(history, history.times < t)
-        # Clip ``p`` into [0, 1] so a badly-behaved retention (e.g.
-        # numerical over/undershoot at grid points) cannot flip the
-        # compensator sign.
-        p = jnp.clip(retention_fn(t, prefix, None), 0.0, 1.0)
-        lam = conditional_intensity_fn(t, prefix)
-        return (1.0 - p) * lam
+    if mark_sampler_fn is None:
 
-    values = jax.vmap(integrand)(grid)
+        def integrand(t: Array) -> Array:
+            prefix = _prefix_history(history, history.times < t)
+            # Clip ``p`` into [0, 1] so a badly-behaved retention (e.g.
+            # numerical over/undershoot at grid points) cannot flip the
+            # compensator sign.
+            p = jnp.clip(retention_fn(t, prefix, None), 0.0, 1.0)
+            lam = conditional_intensity_fn(t, prefix)
+            return (1.0 - p) * lam
+
+        values = jax.vmap(integrand)(grid)
+        return jnp.trapezoid(values, grid)
+
+    if mark_sample_key is None:
+        raise ValueError(
+            "retention_compensator: mark_sampler_fn requires mark_sample_key."
+        )
+    per_t_keys = random.split(mark_sample_key, n_points)
+
+    def integrand_mc(t: Array, key_t: PRNGKeyArray) -> Array:
+        prefix = _prefix_history(history, history.times < t)
+        mark_keys = random.split(key_t, n_mark_samples)
+
+        def one_sample(k: PRNGKeyArray) -> Array:
+            m = mark_sampler_fn(t, prefix, k)
+            return jnp.clip(retention_fn(t, prefix, m), 0.0, 1.0)
+
+        p_bar = jnp.mean(jax.vmap(one_sample)(mark_keys))
+        lam = conditional_intensity_fn(t, prefix)
+        return (1.0 - p_bar) * lam
+
+    values = jax.vmap(integrand_mc)(grid, per_t_keys)
     return jnp.trapezoid(values, grid)
 
 

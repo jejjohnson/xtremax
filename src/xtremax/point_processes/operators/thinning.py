@@ -87,40 +87,50 @@ class ThinningProcess(eqx.Module):
     ) -> Callable[[Array, EventHistory], Array]:
         """Return ``(t, history) -> λ_base(t | H_observed)``.
 
-        Prefers the base operator's own ``intensity`` method when it
-        takes a ``(t, event_times, mask)`` signature (Hawkes, renewal);
-        falls back to ``intensity(t)`` for IPP-style operators; finally
-        uses ``rate`` for HPP. This lets :class:`ThinningProcess` wrap
-        any temporal operator shipped with the package without needing
-        a family-specific subclass.
+        Tries, in order: the base operator's own ``intensity`` method
+        with a ``(t, event_times, mask)`` signature (Hawkes, renewal);
+        ``intensity(t)`` (IPP-style); for a
+        :class:`MarkedTemporalPointProcess` base, the ground operator's
+        intensity (so the compensator term uses the ground-process
+        rate, matching the separable factorisation
+        :math:`\\lambda(t, m) = \\lambda_g(t) \\cdot f(m \\mid t)`);
+        and finally the constant ``base.rate`` for HPP. This lets
+        :class:`ThinningProcess` wrap any temporal operator shipped
+        with the package without needing a family-specific subclass.
         """
+        # If the base is a marked TPP, fall through to its ground
+        # operator. Under separable marks the ground intensity is the
+        # correct quantity to multiply by the mark-averaged retention.
+        target = getattr(self.base, "ground", self.base)
+
         # Probe capability once — all downstream calls land on the same branch.
         try:
-            _ = self.base.intensity(jnp.asarray(0.0), event_times, mask)
+            _ = target.intensity(jnp.asarray(0.0), event_times, mask)
 
             def _fn_history(t: Array, history: EventHistory) -> Array:
-                return self.base.intensity(t, event_times, mask)
+                return target.intensity(t, event_times, mask)
 
             return _fn_history
         except TypeError:
             pass
 
         try:
-            _ = self.base.intensity(jnp.asarray(0.0))
+            _ = target.intensity(jnp.asarray(0.0))
 
             def _fn_ipp(t: Array, history: EventHistory) -> Array:
-                return self.base.intensity(t)
+                return target.intensity(t)
 
             return _fn_ipp
         except TypeError:
             pass
 
-        # Fallback: constant rate from ``base.rate`` (HPP).
-        rate = getattr(self.base, "rate", None)
+        # Fallback: constant rate from ``target.rate`` (HPP).
+        rate = getattr(target, "rate", None)
         if rate is None:
             raise AttributeError(
                 "ThinningProcess.base must expose `intensity(t, ...)` or "
-                "a `rate` attribute; got a base with neither."
+                "a `rate` attribute (directly, or on a ``ground`` "
+                "operator); got a base with neither."
             )
 
         def _fn_const(t: Array, history: EventHistory) -> Array:
@@ -138,6 +148,9 @@ class ThinningProcess(eqx.Module):
         event_times: Float[Array, ...],
         mask: Bool[Array, ...],
         marks: Float[Array, ...] | None = None,
+        *,
+        mark_sample_key: PRNGKeyArray | None = None,
+        n_mark_samples: int = 8,
     ) -> Float[Array, ...]:
         """Log-likelihood of the observed (retained) events.
 
@@ -145,6 +158,13 @@ class ThinningProcess(eqx.Module):
         marked base via the optional ``marks`` argument — the retention
         callable is then invoked with ``(t, history, mark)`` so e.g.
         magnitude-gated detectors work out of the box.
+
+        For **mark-dependent** retention against a marked base, pass
+        ``mark_sample_key`` so the compensator integral Monte-Carlo-
+        averages retention over the base's mark distribution at each
+        quadrature node. Without a key, ``retention_fn`` is called with
+        ``proposed_mark=None`` in the compensator path (correct only
+        for mark-independent retention).
         """
         base_logp = self._call_base_log_prob(event_times, mask, marks=marks)
 
@@ -162,12 +182,32 @@ class ThinningProcess(eqx.Module):
         )
 
         intensity_fn = self._base_intensity_fn(event_times, mask)
+
+        # If the user wants MC-marginalised retention and the base is
+        # a marked process with a ``mark_distribution_fn``, build the
+        # sampler by delegating to it.
+        mark_sampler_fn = None
+        if mark_sample_key is not None:
+            base_mark_fn = getattr(self.base, "mark_distribution_fn", None)
+            if base_mark_fn is not None:
+
+                def mark_sampler_fn(
+                    t: Array,
+                    prefix: EventHistory,
+                    k: PRNGKeyArray,
+                ) -> Array:
+                    d = base_mark_fn(t, prefix)
+                    return d.sample(k)
+
         correction = retention_compensator(
             self.retention_fn,
             intensity_fn,
             history,
             self.observation_window,
             n_points=self.n_integration_points,
+            mark_sampler_fn=mark_sampler_fn,
+            mark_sample_key=mark_sample_key,
+            n_mark_samples=n_mark_samples,
         )
         return base_logp + retention_term - correction
 
@@ -195,7 +235,10 @@ class ThinningProcess(eqx.Module):
         max_events: int,
         max_candidates: int | None = None,
         **base_kwargs,
-    ) -> tuple[Float[Array, ...], Bool[Array, ...], Int[Array, ...]]:
+    ) -> (
+        tuple[Float[Array, ...], Bool[Array, ...], Int[Array, ...]]
+        | tuple[Float[Array, ...], Bool[Array, ...], Float[Array, ...]]
+    ):
         """Sample by first drawing from the base and then Bernoulli-thinning.
 
         Two-pass draw: (1) draw a full latent realisation from the
@@ -205,6 +248,11 @@ class ThinningProcess(eqx.Module):
         mark-dependent retention. ``max_candidates`` is forwarded to
         the base's own sampler for families (Hawkes, IPP) that use
         thinning internally.
+
+        Returns:
+            ``(times, mask, n_retained)`` for an unmarked base, or
+            ``(times, mask, retained_marks)`` when the base is a marked
+            process. The third element disambiguates the two cases.
         """
         key_base, key_thin = jax.random.split(key)
 
@@ -299,8 +347,15 @@ class ThinningProcess(eqx.Module):
                 ),
             )
 
-        n_retained = jnp.sum(final_history.mask).astype(jnp.int32)
         times = jnp.where(
             final_history.mask, final_history.times, self.observation_window
         )
-        return times, final_history.mask, n_retained
+        if latent_marks is None:
+            n_retained = jnp.sum(final_history.mask).astype(jnp.int32)
+            return times, final_history.mask, n_retained
+        # Marked base: return retained marks in the user's original
+        # shape (scalar marks flatten the trailing ``1`` dimension).
+        retained_marks = final_history.marks
+        if latent_marks.ndim == 1:
+            retained_marks = retained_marks[..., 0]
+        return times, final_history.mask, retained_marks

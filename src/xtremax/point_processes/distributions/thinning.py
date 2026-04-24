@@ -61,14 +61,29 @@ class ThinningProcess(dist.Distribution):
         self,
         key: PRNGKeyArray,
         sample_shape: tuple[int, ...] = (),
-    ) -> tuple[Float[Array, ...], Bool[Array, ...]]:
+    ) -> (
+        tuple[Float[Array, ...], Bool[Array, ...]]
+        | tuple[Float[Array, ...], Bool[Array, ...], Float[Array, ...]]
+    ):
+        """Return ``(times, mask)`` for an unmarked base, or
+        ``(times, mask, marks)`` when the base is a marked process.
+
+        The triple matches what :meth:`log_prob` accepts so that
+        ``d.log_prob(d.sample(key))`` round-trips for both cases.
+        """
         check_prng_key(key)
         if sample_shape != ():
             raise NotImplementedError(
                 "ThinningProcess distribution supports sample_shape=() only."
             )
-        times, mask, _ = self._op.sample(key, self._max_events)
-        return times, mask
+        times, mask, third = self._op.sample(key, self._max_events)
+        # Marked base: ``third`` is a mark array. Otherwise a scalar
+        # integer count that we drop (users who want the count can
+        # read ``mask.sum()``).
+        third_arr = jnp.asarray(third)
+        if third_arr.ndim == 0 and jnp.issubdtype(third_arr.dtype, jnp.integer):
+            return times, mask
+        return times, mask, third
 
     def log_prob(
         self,

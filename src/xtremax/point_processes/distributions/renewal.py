@@ -37,9 +37,16 @@ class RenewalProcess(dist.Distribution):
         self.observation_window = jnp.asarray(observation_window)
         self._max_events = int(max_events)
         self._op = _RenewalOp(inter_event_dist, self.observation_window)
-        super().__init__(
-            batch_shape=self.observation_window.shape, validate_args=validate_args
+        # A batched inter-event distribution (e.g. vmapped-over rates)
+        # adds batch dims to the per-sequence log-likelihood; the
+        # window length can also be batched independently. Broadcast
+        # both into the NumPyro batch_shape so plated models don't see
+        # a phantom "scalar" shape that disagrees with the actual
+        # output shape of ``log_prob``.
+        batch_shape = jnp.broadcast_shapes(
+            self.observation_window.shape, inter_event_dist.batch_shape
         )
+        super().__init__(batch_shape=batch_shape, validate_args=validate_args)
 
     @property
     def max_events(self) -> int:
