@@ -172,15 +172,24 @@ def ipp_sample_inversion(
     Lambda_T = jnp.asarray(Lambda_T)
 
     n_events = random.poisson(key_n, Lambda_T)
-    u = random.uniform(key_u, shape=(max_events,)) * Lambda_T
-    u_sorted = jnp.sort(u)
-    times = inverse_cumulative_intensity_fn(u_sorted)
 
+    # Mark the first ``n_events`` buffer slots as real and push padding
+    # uniforms to ``+inf`` before sorting, so the real draws occupy
+    # sorted ranks ``0..n-1`` without being biased to small values.
+    # (Sorting all ``max_events`` uniforms and then truncating would
+    # pick the ``n`` smallest — not ``n`` iid uniforms on ``[0, Λ(T)]``.)
     ranks = jnp.arange(max_events)
     mask = ranks < n_events
-    # Padding position: clamp to the right edge of the window via
-    # Λ⁻¹(Λ(T)). Keeps downstream log_intensity evaluations inside the
-    # intended support without needing a second kwarg.
+    u = random.uniform(key_u, shape=(max_events,)) * Lambda_T
+    u_sortable = jnp.where(mask, u, jnp.inf)
+    u_sorted = jnp.sort(u_sortable)
+    # Replace padding positions with ``Λ(T)`` before applying the
+    # inverse — keeps every buffer slot inside a representable domain
+    # so ``Λ⁻¹`` never sees ``+inf``.
+    u_clamped = jnp.where(mask, u_sorted, Lambda_T)
+    times = inverse_cumulative_intensity_fn(u_clamped)
+
+    # Final padding-position value: ``Λ⁻¹(Λ(T))`` = right edge of window.
     t_right = inverse_cumulative_intensity_fn(Lambda_T)
     times = jnp.where(mask, times, t_right)
     return times, mask, n_events

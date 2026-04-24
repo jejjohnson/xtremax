@@ -121,9 +121,16 @@ def hpp_intensity(
     t: Float[Array, ...],
     rate: Float[Array, ...],
 ) -> Float[Array, ...]:
-    """Constant intensity :math:`\\lambda(t) = \\lambda`."""
+    """Constant intensity :math:`\\lambda(t) = \\lambda`.
+
+    Broadcasts to the joint shape of ``t`` and ``rate`` so scalar ``t``
+    with batched ``rate`` (and vice versa) both work, matching the
+    broadcasting semantics of the other HPP primitives.
+    """
     t = jnp.asarray(t)
-    return jnp.broadcast_to(jnp.asarray(rate), t.shape)
+    rate = jnp.asarray(rate)
+    out_shape = jnp.broadcast_shapes(t.shape, rate.shape)
+    return jnp.broadcast_to(rate, out_shape)
 
 
 def hpp_cumulative_intensity(

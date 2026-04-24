@@ -160,3 +160,19 @@ def test_empirical_intensity_matches_parameter(rate):
     counts = jax.vmap(lambda k: hpp_sample(k, rate, 2.0, max_events=64)[2])(keys)
     mean_rate = jnp.mean(counts.astype(jnp.float32)) / 2.0
     assert jnp.abs(mean_rate - rate) < 0.15 * rate + 0.05
+
+
+def test_hpp_intensity_broadcasts_scalar_t_with_batched_rate():
+    """Regression (PR #10 review): scalar t + batched rate must broadcast."""
+    from xtremax.point_processes.primitives import hpp_intensity
+
+    rates = jnp.array([1.0, 2.0, 3.0])
+    out = hpp_intensity(jnp.asarray(0.5), rates)
+    assert out.shape == rates.shape
+    assert jnp.allclose(out, rates)
+
+    # Reverse direction: batched t, scalar rate.
+    t = jnp.array([0.0, 1.0, 2.0, 3.0])
+    out2 = hpp_intensity(t, jnp.asarray(4.0))
+    assert out2.shape == t.shape
+    assert jnp.all(out2 == 4.0)

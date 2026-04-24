@@ -96,3 +96,36 @@ class TestCompensatorCurve:
         assert jnp.all(jnp.isfinite(cum[:n_real]))
         assert jnp.all(jnp.isnan(ts[n_real:]))
         assert jnp.all(jnp.isnan(cum[n_real:]))
+
+
+class TestKsStatisticRegression:
+    def test_two_sided_catches_lower_step_gap(self):
+        """The two-sided KS must see both ``i/n - F`` and ``F - (i-1)/n``.
+
+        With all residuals equal to 5.0 and n=4, F(5) ≈ 0.993. The
+        one-sided ``|i/n - F|`` form peaks at rank 1 with 0.743. The
+        correct two-sided statistic also considers the lower-step gap
+        ``F - (i-1)/n``: at rank 1 that is 0.993 - 0 = 0.993, which
+        dominates. A version that omits the lower branch would return
+        ≈ 0.743 instead.
+        """
+        from xtremax.point_processes.primitives import ks_statistic_exp1
+
+        residuals = jnp.array([5.0, 5.0, 5.0, 5.0])
+        mask = jnp.ones_like(residuals, dtype=jnp.bool_)
+        ks = ks_statistic_exp1(residuals, mask)
+        # Two-sided sup is 0.993 (rank-1 lower step); one-sided was 0.743.
+        assert float(ks) > 0.9
+        assert jnp.isfinite(ks)
+
+    def test_monotone_residuals_trivial_case(self):
+        from xtremax.point_processes.primitives import ks_statistic_exp1
+
+        # Residuals exactly matching theoretical (i - 0.5)/n quantiles
+        # give a small KS statistic.
+        n = 50
+        positions = (jnp.arange(1, n + 1, dtype=jnp.float32) - 0.5) / n
+        residuals = -jnp.log1p(-positions)
+        mask = jnp.ones_like(residuals, dtype=jnp.bool_)
+        ks = ks_statistic_exp1(residuals, mask)
+        assert float(ks) < 0.05

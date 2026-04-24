@@ -46,7 +46,9 @@ class HomogeneousPoissonProcess(dist.Distribution):
         "rate": constraints.positive,
         "observation_window": constraints.positive,
     }
-    support = constraints.real_vector
+    # Samples are a ``(times, mask)`` PyTree rather than a vector in ℝⁿ,
+    # so ``dependent`` is the correct constraint to register with NumPyro.
+    support = constraints.dependent
     reparametrized_params: list[str] = []
 
     def __init__(
@@ -74,12 +76,17 @@ class HomogeneousPoissonProcess(dist.Distribution):
         self,
         key: PRNGKeyArray,
         sample_shape: tuple[int, ...] = (),
-    ) -> tuple[Float[Array, ...], Bool[Array, ...], Int[Array, ...]]:
-        """Return ``(times, mask, n_events)`` with shapes matching the
-        operator ``.sample`` — see :class:`_HppOp`.
+    ) -> tuple[Float[Array, ...], Bool[Array, ...]]:
+        """Return a ``(times, mask)`` PyTree.
+
+        This matches the format :meth:`log_prob` consumes, so
+        ``dist.log_prob(dist.sample(key))`` is a valid round-trip.
+        If you need the uncapped Poisson count, call the operator
+        layer directly or use ``mask.sum(axis=-1)``.
         """
         check_prng_key(key)
-        return self._op.sample(key, self._max_events, sample_shape)
+        times, mask, _ = self._op.sample(key, self._max_events, sample_shape)
+        return times, mask
 
     def log_prob(
         self,
@@ -123,7 +130,8 @@ class InhomogeneousPoissonProcess(dist.Distribution):
     arg_constraints = {
         "observation_window": constraints.positive,
     }
-    support = constraints.real_vector
+    # Samples are a ``(times, mask)`` PyTree rather than a vector in ℝⁿ.
+    support = constraints.dependent
     reparametrized_params: list[str] = []
 
     def __init__(
@@ -157,11 +165,16 @@ class InhomogeneousPoissonProcess(dist.Distribution):
         self,
         key: PRNGKeyArray,
         sample_shape: tuple[int, ...] = (),
-    ) -> tuple[Float[Array, ...], Bool[Array, ...], Int[Array, ...]]:
-        """Thinning sampler. ``sample_shape`` must be empty for now —
-        batched IPP sampling over an upper-bound ``λ_max`` requires a
-        shared buffer size, which we leave to the operator layer where
-        the user can ``vmap`` explicitly.
+    ) -> tuple[Float[Array, ...], Bool[Array, ...]]:
+        """Return a ``(times, mask)`` PyTree (matching :meth:`log_prob`).
+
+        ``sample_shape`` must be empty for now — batched IPP sampling
+        over an upper-bound ``λ_max`` requires a shared buffer size,
+        which we leave to the operator layer where the user can
+        ``vmap`` explicitly. Drops the uncapped candidate count
+        returned by the operator; that is available via
+        ``mask.sum()`` for accepted events, or from the operator API
+        if the raw count matters.
         """
         check_prng_key(key)
         if sample_shape != ():
@@ -169,7 +182,8 @@ class InhomogeneousPoissonProcess(dist.Distribution):
                 "IPP distribution sample_shape=() only; use vmap over "
                 "PRNG keys at the operator layer for batched draws."
             )
-        return self._op.sample(key, self._max_candidates)
+        times, mask, _ = self._op.sample(key, self._max_candidates)
+        return times, mask
 
     def log_prob(
         self,

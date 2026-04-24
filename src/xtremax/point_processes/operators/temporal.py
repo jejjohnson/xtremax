@@ -57,6 +57,42 @@ from xtremax.point_processes.primitives import (
 )
 
 
+class PiecewiseConstantLogIntensity(eqx.Module):
+    """Piecewise-constant log-intensity as an ``eqx.Module``.
+
+    Storing ``bin_edges`` and ``log_rates`` as PyTree leaves (rather
+    than captured in a closure) lets them be inspected, vmapped over,
+    and optimised via ``eqx.filter_grad`` when used inside an
+    :class:`InhomogeneousPoissonProcess`. Parameterising the *log*
+    rates means the rate is always positive without a further
+    constraint — useful for unconstrained gradient-based fitting.
+    """
+
+    bin_edges: Float[Array, ...]
+    log_rates: Float[Array, ...]
+
+    def __init__(
+        self,
+        bin_edges: ArrayLike,
+        rates: ArrayLike | None = None,
+        log_rates: ArrayLike | None = None,
+    ) -> None:
+        if (rates is None) == (log_rates is None):
+            raise ValueError("Provide exactly one of `rates` or `log_rates`.")
+        self.bin_edges = jnp.asarray(bin_edges)
+        self.log_rates = (
+            jnp.log(jnp.asarray(rates)) if log_rates is None else jnp.asarray(log_rates)
+        )
+
+    def __call__(self, t: Array) -> Array:
+        # ``searchsorted`` on interior edges maps each ``t`` to a bin
+        # index in ``[0, E-1]``; clamp so values on or beyond the right
+        # edge still fall into the last bin rather than off the end.
+        idx = jnp.searchsorted(self.bin_edges[1:], t, side="right")
+        idx = jnp.clip(idx, 0, self.log_rates.shape[-1] - 1)
+        return self.log_rates[idx]
+
+
 class GoodnessOfFit(NamedTuple):
     """Bundle of diagnostics returned by :meth:`goodness_of_fit`.
 
@@ -235,13 +271,15 @@ class InhomogeneousPoissonProcess(eqx.Module):
             plumbing kwargs through every call.
 
     Note:
-        ``log_intensity_fn`` is stored as a regular PyTree leaf. If it
-        is a plain Python callable (not an ``eqx.Module``), wrap it
-        with :func:`eqx.filter` / ``eqx.field(static=True)`` by using
-        the :meth:`from_fn` constructor which does this for you.
+        ``log_intensity_fn`` is stored as a regular PyTree leaf — **not**
+        a static field. This way, when the function is itself an
+        ``eqx.Module`` (e.g. an MLP), its array leaves participate in the
+        PyTree and are differentiable through :meth:`log_prob`. Plain
+        Python callables carry no array leaves and are therefore
+        effectively static with no extra ceremony.
     """
 
-    log_intensity_fn: Callable[[Array], Array] = eqx.field(static=True)
+    log_intensity_fn: Callable[[Array], Array]
     observation_window: Float[Array, ...]
     integrated_intensity: Float[Array, ...] | None
     lambda_max: Float[Array, ...] | None
@@ -280,8 +318,8 @@ class InhomogeneousPoissonProcess(eqx.Module):
     @classmethod
     def from_piecewise_constant(
         cls,
-        bin_edges: Float[Array, ...],
-        rates: Float[Array, ...],
+        bin_edges: ArrayLike,
+        rates: ArrayLike,
         **kwargs,
     ) -> InhomogeneousPoissonProcess:
         """Build an IPP with piecewise-constant intensity.
@@ -295,30 +333,27 @@ class InhomogeneousPoissonProcess(eqx.Module):
                 ``n_integration_points``).
 
         Returns:
-            Operator with ``log_intensity_fn`` evaluating to
-            ``log(rates[bin_of(t)])``, ``integrated_intensity`` set to
-            the exact sum of ``rates × bin_widths``, and ``lambda_max``
-            set to ``max(rates)``.
+            Operator whose ``log_intensity_fn`` is a
+            :class:`PiecewiseConstantLogIntensity` module — its
+            ``bin_edges`` and ``log_rates`` are real PyTree leaves,
+            so you can differentiate through them with
+            ``eqx.filter_grad``. ``integrated_intensity`` is the exact
+            sum of ``rates × bin_widths``, and ``lambda_max`` is
+            ``max(rates)``.
         """
-        bin_edges = jnp.asarray(bin_edges)
-        rates = jnp.asarray(rates)
-        widths = jnp.diff(bin_edges)
-        integrated = jnp.sum(widths * rates)
-        lam_max = jnp.max(rates)
+        bin_edges_arr = jnp.asarray(bin_edges)
+        rates_arr = jnp.asarray(rates)
+        widths = jnp.diff(bin_edges_arr)
+        integrated = jnp.sum(widths * rates_arr)
+        lam_max = jnp.max(rates_arr)
 
-        # Reading `bin_edges` / `rates` directly from the closure keeps
-        # them as traced leaves of the containing module — good for
-        # JAX transforms that want to differentiate through the rates.
-        def log_intensity_fn(t: Array) -> Array:
-            # jnp.searchsorted returns index in [0, E]; clamp to [0, E-2]
-            # so every point maps to a valid bin.
-            idx = jnp.searchsorted(bin_edges[1:], t, side="right")
-            idx = jnp.clip(idx, 0, rates.shape[0] - 1)
-            return jnp.log(rates[idx])
+        log_intensity_fn = PiecewiseConstantLogIntensity(
+            bin_edges=bin_edges_arr, rates=rates_arr
+        )
 
         return cls(
             log_intensity_fn,
-            observation_window=bin_edges[-1],
+            observation_window=bin_edges_arr[-1],
             integrated_intensity=integrated,
             lambda_max=lam_max,
             **kwargs,

@@ -13,6 +13,9 @@ from xtremax.point_processes.operators import (
     HomogeneousPoissonProcess,
     InhomogeneousPoissonProcess,
 )
+from xtremax.point_processes.primitives import (
+    ipp_sample_inversion as ipp_sample_inversion_op,
+)
 
 
 class TestHppOperator:
@@ -176,3 +179,89 @@ class TestIppOperator:
         times, mask, _ = op.sample_inversion(random.PRNGKey(2), inv_cum, max_events=512)
         gof = op.goodness_of_fit(times, mask)
         assert jnp.isfinite(gof.ks_statistic)
+
+
+class TestRegressionsFromPrReview:
+    """Regression tests guarding specific PR-review findings on PR #10."""
+
+    def test_neural_intensity_module_is_trainable(self):
+        # PR review: declaring log_intensity_fn with eqx.field(static=True)
+        # removed it from the PyTree, so an `eqx.Module` intensity's
+        # parameters couldn't be optimised. Check that grads flow into
+        # the intensity module's array leaves.
+        import equinox as eqx
+
+        class LinearLogIntensity(eqx.Module):
+            a: jnp.ndarray
+            b: jnp.ndarray
+
+            def __call__(self, t):
+                return self.a * t + self.b
+
+        fn = LinearLogIntensity(a=jnp.asarray(0.2), b=jnp.asarray(0.5))
+        ipp = InhomogeneousPoissonProcess(
+            log_intensity_fn=fn,
+            observation_window=jnp.asarray(5.0),
+            n_integration_points=200,
+        )
+        times = jnp.array([0.5, 1.0, 2.5, 3.8])
+        mask = jnp.ones_like(times, dtype=jnp.bool_)
+
+        grads = eqx.filter_grad(lambda m: -m.log_prob(times, mask))(ipp)
+        # The intensity module's `a` and `b` leaves should receive
+        # finite non-zero gradients; if `log_intensity_fn` were static,
+        # filter_grad would return None for these leaves.
+        assert grads.log_intensity_fn.a is not None
+        assert grads.log_intensity_fn.b is not None
+        assert jnp.isfinite(grads.log_intensity_fn.a)
+        assert jnp.isfinite(grads.log_intensity_fn.b)
+
+    def test_piecewise_log_intensity_is_pytree_with_leaves(self):
+        # PR review: from_piecewise_constant used to build a Python
+        # closure, hiding `bin_edges`/`rates` from the PyTree. They
+        # should now appear as leaves.
+        import equinox as eqx
+
+        from xtremax.point_processes.operators import PiecewiseConstantLogIntensity
+
+        op = InhomogeneousPoissonProcess.from_piecewise_constant(
+            bin_edges=jnp.array([0.0, 2.0, 5.0]),
+            rates=jnp.array([1.0, 4.0]),
+        )
+        assert isinstance(op.log_intensity_fn, PiecewiseConstantLogIntensity)
+        leaves = jax.tree_util.tree_leaves(op.log_intensity_fn)
+        # bin_edges (shape (3,)) + log_rates (shape (2,)) = 2 array leaves.
+        assert len(leaves) == 2
+
+        # Gradients should flow through log_rates.
+        times = jnp.array([1.0, 3.0, 4.0])
+        mask = jnp.ones_like(times, dtype=jnp.bool_)
+
+        grads = eqx.filter_grad(lambda m: -m.log_prob(times, mask))(op)
+        assert grads.log_intensity_fn.log_rates is not None
+        assert jnp.all(jnp.isfinite(grads.log_intensity_fn.log_rates))
+
+    def test_inversion_sampler_mean_not_biased_early(self):
+        # PR review: ipp_sample_inversion had the same order-statistic
+        # bias that was fixed in thinning. With constant rate on [0, T],
+        # accepted event times should be ~ Uniform(0, T) — check the
+        # empirical mean averaged across seeds.
+        rate = 2.0
+        T = 10.0
+        Lambda_T = rate * T
+
+        def inv_cum(y):
+            return y / rate
+
+        def once(k):
+            times, mask, _ = ipp_sample_inversion_op(
+                k, inv_cum, Lambda_T, max_events=512
+            )
+            return jnp.sum(jnp.where(mask, times, 0.0)), jnp.sum(mask)
+
+        keys = random.split(random.PRNGKey(0), 400)
+        sums, counts = jax.vmap(once)(keys)
+        mean_time = jnp.sum(sums) / jnp.sum(counts)
+        # Unbiased mean is T/2 = 5.0; order-statistic bias would pull
+        # this well below 5.0 (toward ~n/(max_events+1) * T).
+        assert jnp.abs(mean_time - 0.5 * T) < 0.3

@@ -91,14 +91,18 @@ def ks_statistic_exp1(
 
     max_len = residuals.shape[-1]
     ranks = jnp.arange(1, max_len + 1, dtype=residuals.dtype)
-    # Empirical CDF = rank / n_real, but only valid for ranks in
-    # [1, n_real]. Outside that range the residual is +inf so the
-    # theoretical CDF is 1 and the contribution is zero.
     n_broadcast = jnp.expand_dims(n_real.astype(residuals.dtype), axis=-1)
-    empirical = ranks / jnp.maximum(n_broadcast, 1.0)
-    theoretical = 1.0 - jnp.exp(-sorted_res)
+    inv_n = 1.0 / jnp.maximum(n_broadcast, 1.0)
 
-    diff = jnp.abs(empirical - theoretical)
+    theoretical = 1.0 - jnp.exp(-sorted_res)
+    # Two-sided one-sample KS: at rank i the empirical CDF jumps from
+    # (i-1)/n to i/n, so the supremum of |F_n(x) - F(x)| can land on
+    # either side of the jump. Taking only ``|i/n - F|`` (as the first
+    # version did) misses the ``F - (i-1)/n`` branch and under-reports
+    # the distance when the theoretical CDF lands just below a step.
+    upper = ranks * inv_n - theoretical
+    lower = theoretical - (ranks - 1.0) * inv_n
+    diff = jnp.maximum(upper, lower)
     valid = ranks <= n_broadcast
     return jnp.max(jnp.where(valid, diff, 0.0), axis=-1)
 
