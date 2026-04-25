@@ -13,6 +13,7 @@ from xtremax.point_processes._domain import RectangularDomain
 from xtremax.point_processes.operators.hpp_spatial import (
     HomogeneousSpatialPP as _HppSpatialOp,
 )
+from xtremax.point_processes.primitives.hpp_spatial import hpp_spatial_log_prob
 
 
 class HomogeneousSpatialPP(dist.Distribution):
@@ -87,14 +88,18 @@ class HomogeneousSpatialPP(dist.Distribution):
         ``(locations, n_events)``.
         """
         locations, counts_or_mask = value
+        del locations  # the HPP log-likelihood depends only on the count
         counts_or_mask = jnp.asarray(counts_or_mask)
         if counts_or_mask.dtype == jnp.bool_:
-            return self._op.log_prob(locations, counts_or_mask)
-        # Scalar / int-array path: fabricate a mask consistent with the
-        # supplied count and use the standard log_prob.
-        ranks = jnp.arange(locations.shape[-2])
-        mask = ranks < counts_or_mask
-        return self._op.log_prob(locations, mask)
+            n_events = jnp.sum(counts_or_mask, axis=-1)
+        else:
+            # Use the raw count directly. Fabricating a mask from
+            # ``ranks < count`` would silently clip ``count > max_events``
+            # to ``max_events`` and return the wrong likelihood for any
+            # caller scoring observed counts above the buffer size
+            # (Codex P1 in PR #12 review).
+            n_events = counts_or_mask
+        return hpp_spatial_log_prob(n_events, self._op.rate, self._op.domain.volume())
 
     def _validate_sample(self, value) -> None:
         return None

@@ -22,12 +22,32 @@ from xtremax.point_processes.primitives import (
 
 class TestHppSpatialLogProb:
     def test_matches_closed_form(self) -> None:
-        # log L = n log λ - λ|D| - n log |D|.
+        # Janossy form: log L = n log λ - λ|D|. (No -n log|D| term —
+        # see Codex P2 in PR #12 review for the rationale.)
         rate = 0.5
         vol = 100.0
         n = jnp.asarray(20)
-        expected = 20 * jnp.log(rate) - rate * vol - 20 * jnp.log(vol)
+        expected = 20 * jnp.log(rate) - rate * vol
         assert jnp.allclose(hpp_spatial_log_prob(n, rate, vol), expected)
+
+    def test_matches_ipp_for_constant_intensity(self) -> None:
+        # The HPP log-prob must equal the IPP log-prob under constant
+        # intensity. Codex P2 regression.
+        from xtremax.point_processes.primitives import ipp_spatial_log_prob
+
+        rate = 0.7
+        vol = 9.0
+        locations = jnp.array(
+            [[1.0, 1.0], [1.5, 2.0], [2.5, 0.5], [0.0, 0.0], [0.0, 0.0]]
+        )
+        mask = jnp.array([True, True, True, False, False])
+
+        def log_lam(s):
+            return jnp.full(s.shape[:-1], jnp.log(rate))
+
+        ipp_lp = ipp_spatial_log_prob(locations, mask, log_lam, rate * vol)
+        hpp_lp = hpp_spatial_log_prob(jnp.asarray(3), rate, vol)
+        assert jnp.allclose(ipp_lp, hpp_lp)
 
     def test_grad_through_rate(self) -> None:
         # d(log L)/dλ = n/λ - |D|.

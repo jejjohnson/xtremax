@@ -29,7 +29,7 @@ def hpp_spatial_log_prob(
     rate: Float[Array, ...],
     domain_volume: Float[Array, ...],
 ) -> Float[Array, ...]:
-    """Joint log-likelihood for ``n`` iid-uniform points in a CSR pattern.
+    """Joint Janossy log-likelihood of a homogeneous Poisson pattern.
 
     Args:
         n_events: Observed event count.
@@ -37,15 +37,26 @@ def hpp_spatial_log_prob(
         domain_volume: Lebesgue measure ``|D|``.
 
     Returns:
-        Log-likelihood ``n log λ − λ|D| − n log |D|``, broadcast over
-        inputs. The :math:`-n \\log |D|` term reflects the iid-uniform
-        location density; drop it to recover the temporal-style
-        ``hpp_log_prob`` which conditions on the count alone.
+        Janossy log-likelihood ``n log λ − λ|D|``. This is the
+        constant-intensity specialisation of
+        :func:`~xtremax.point_processes.primitives.ipp_spatial.ipp_spatial_log_prob`,
+        which evaluates :math:`\\sum_i \\log \\lambda(s_i) - \\Lambda(D)`.
+        Setting :math:`\\lambda(s) = \\lambda` recovers exactly this
+        expression.
+
+    Notes:
+        The Janossy form drops both the :math:`-\\log(n!)` Poisson-count
+        normaliser and the :math:`-n \\log |D|` iid-uniform location
+        density. Those normalisers cancel out in likelihood ratios used
+        for parameter estimation, so omitting them keeps the HPP log-prob
+        directly comparable to IPP / Hawkes / renewal log-probs across
+        the package. To recover the *count*-only log-pmf with the
+        :math:`\\log(n!)` term, use :func:`hpp_spatial_count_log_prob`.
     """
     n = jnp.asarray(n_events)
     rate = jnp.asarray(rate)
     vol = jnp.asarray(domain_volume)
-    return n * jnp.log(rate) - rate * vol - n * jnp.log(vol)
+    return n * jnp.log(rate) - rate * vol
 
 
 def hpp_spatial_count_log_prob(

@@ -548,3 +548,82 @@ class TestMarkedSpatialDomainReturnsRectangularDomain:
         )
         # If the return type were ``Array``, ``.volume()`` would fail.
         assert jnp.allclose(mpp.domain.volume(), 16.0)
+
+
+class TestHppSpatialLogProbJanossy:
+    """Codex P2 round 2: HPP log-prob aligns with IPP under constant intensity.
+
+    The previous form included a spurious ``-n log |D|`` term that
+    diverged from the standard Janossy log-likelihood (and from the
+    IPP form under constant intensity), skewing absolute values used
+    in model comparison.
+    """
+
+    def test_drops_n_log_volume_term(self):
+        from xtremax.point_processes.primitives import hpp_spatial_log_prob
+
+        rate = 0.5
+        vol = 100.0
+        n = jnp.asarray(20)
+        # Janossy: n log λ - λ|D|. No -n log |D| term.
+        expected = 20 * jnp.log(rate) - rate * vol
+        assert jnp.allclose(hpp_spatial_log_prob(n, rate, vol), expected)
+
+    def test_matches_ipp_with_constant_intensity(self):
+        from xtremax.point_processes.primitives import (
+            hpp_spatial_log_prob,
+            ipp_spatial_log_prob,
+        )
+
+        rate = 0.5
+        vol = 16.0  # 4×4 box
+        locations = jnp.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0], [0.0, 0.0]])
+        mask = jnp.array([True, True, True, False])
+
+        def log_lam(s):
+            return jnp.full(s.shape[:-1], jnp.log(rate))
+
+        ipp_lp = ipp_spatial_log_prob(locations, mask, log_lam, rate * vol)
+        hpp_lp = hpp_spatial_log_prob(jnp.asarray(3), rate, vol)
+        assert jnp.allclose(ipp_lp, hpp_lp)
+
+
+class TestHppSpatialDistCountPathNoClip:
+    """Codex P1 round 2: count-path log_prob must use raw count.
+
+    Fabricating a mask via ``ranks < count`` silently clipped to
+    ``max_events``; for ``n > max_events`` the log-likelihood would
+    be wrong.
+    """
+
+    def test_count_above_buffer_size_unclipped(self):
+        from xtremax.point_processes import RectangularDomain
+        from xtremax.point_processes.distributions import HomogeneousSpatialPP
+        from xtremax.point_processes.primitives import hpp_spatial_log_prob
+
+        domain = RectangularDomain.from_size(jnp.array([2.0, 2.0]))
+        # Tiny buffer of size 8; supply a count well above it.
+        d_pp = HomogeneousSpatialPP(rate=5.0, domain=domain, max_events=8)
+        locations = jnp.zeros((8, 2))
+        big_count = jnp.asarray(50)
+        result = d_pp.log_prob((locations, big_count))
+        # Compare against the primitive at the *real* count, not the
+        # clipped value. With clipping the result would be off by
+        # ``(50 - 8) * log(rate) = 42 * log 5 ≈ 67.6``.
+        expected = hpp_spatial_log_prob(big_count, 5.0, domain.volume())
+        assert jnp.allclose(result, expected)
+
+    def test_mask_path_still_works(self):
+        from xtremax.point_processes import RectangularDomain
+        from xtremax.point_processes.distributions import HomogeneousSpatialPP
+
+        domain = RectangularDomain.from_size(jnp.array([4.0, 4.0]))
+        d_pp = HomogeneousSpatialPP(rate=0.5, domain=domain, max_events=64)
+        import jax.random as jr
+
+        locs, mask = d_pp.sample(jr.PRNGKey(0))
+        n = jnp.sum(mask).astype(jnp.int32)
+        # Both signatures must agree.
+        lp_mask = d_pp.log_prob((locs, mask))
+        lp_count = d_pp.log_prob((locs, n))
+        assert jnp.allclose(lp_mask, lp_count)
