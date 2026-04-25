@@ -116,18 +116,25 @@ def stpp_hawkes_intensity(
 
     if t_arr.ndim == 0:
         past = mask & (event_times < t_arr)
-        dt = t_arr - event_times
+        # Clip ``dt`` to non-negative before the exponential. With
+        # negative ``dt`` (future / padding events) ``exp(-β·dt)`` can
+        # overflow to ``+inf``, and ``inf · 0`` from the masked-out
+        # branch then poisons the result with ``nan`` even though the
+        # term should contribute zero. The mask is still applied below
+        # to zero out the future events; ``dt_pos`` only keeps
+        # intermediates finite.
+        dt_pos = jnp.clip(t_arr - event_times, 0.0, jnp.inf)
         delta = s[..., None, :] - event_locations
         spatial = _gaussian_kernel(delta, sigma)
-        temporal = beta * jnp.exp(-beta * dt)
+        temporal = beta * jnp.exp(-beta * dt_pos)
         contribs = jnp.where(past, alpha * temporal * spatial, 0.0)
         return mu + jnp.sum(contribs, axis=-1)
 
     past = mask & (event_times < t_arr[..., None])
-    dt = t_arr[..., None] - event_times
+    dt_pos = jnp.clip(t_arr[..., None] - event_times, 0.0, jnp.inf)
     delta = s[..., None, :] - event_locations
     spatial = _gaussian_kernel(delta, sigma)
-    temporal = beta * jnp.exp(-beta * dt)
+    temporal = beta * jnp.exp(-beta * dt_pos)
     contribs = jnp.where(past, alpha * temporal * spatial, 0.0)
     return mu + jnp.sum(contribs, axis=-1)
 
@@ -196,14 +203,20 @@ def stpp_hawkes_log_prob(
     locations = jnp.asarray(locations)
     times = jnp.asarray(times)
 
-    n_max = times.shape[-1]
     dt = times[..., :, None] - times[..., None, :]
     delta = locations[..., :, None, :] - locations[..., None, :, :]
     spatial_vals = _gaussian_kernel(delta, sigma)
     temporal_vals = beta * jnp.exp(-beta * jnp.clip(dt, 0.0, jnp.inf))
 
-    idx = jnp.arange(n_max)
-    strictly_before = idx[None, :] < idx[:, None]
+    # Define causal precedence by *timestamp*, not buffer position.
+    # Position-based masking (``idx_j < idx_i``) silently treats
+    # whichever rows the caller wrote first as "earlier" — for an
+    # unsorted buffer this turns future events into spurious parents,
+    # and the ``clip(dt, 0, inf)`` then injects them at the maximum
+    # temporal-kernel value. Timestamp comparison is correct
+    # regardless of the row order chosen by the caller (Codex P2 in
+    # PR #13 review).
+    strictly_before = times[..., None, :] < times[..., :, None]
     pair_valid = strictly_before & mask[..., None, :]
     contribs = alpha * temporal_vals * spatial_vals
     per_event = jnp.sum(jnp.where(pair_valid, contribs, 0.0), axis=-1)
@@ -314,14 +327,20 @@ def stpp_hawkes_sample(
 
         # Per-unit-volume peak intensity, valid as an upper bound on
         # ``λ*(s, t)`` for any ``s ∈ D`` from the current step onward.
-        lam_bar_per_vol = stpp_hawkes_lambda_max(
-            count, mu_arr, alpha_arr, beta_arr, sigma_arr, d
+        # Floor with ``eps`` so that a μ=0, count=0 history does not
+        # divide by zero in either ``dt`` or the acceptance ratio
+        # (Codex P1 in PR #13 review). The clamp matches the pattern in
+        # :func:`thinning_sample`.
+        eps = jnp.asarray(1e-30, dtype=mu_arr.dtype)
+        lam_bar_per_vol = jnp.maximum(
+            stpp_hawkes_lambda_max(count, mu_arr, alpha_arr, beta_arr, sigma_arr, d),
+            eps,
         )
         # The inter-event waiting time over the whole domain is
         # exponential with rate ``λ̄·|D|``: integrating the per-volume
         # bound across ``D`` gives the rate at which space-time events
         # arrive anywhere in the box.
-        lam_bar_total = lam_bar_per_vol * box_vol
+        lam_bar_total = jnp.maximum(lam_bar_per_vol * box_vol, eps)
         u = random.uniform(k_dt, minval=1e-30, maxval=1.0)
         dt = -jnp.log(u) / lam_bar_total
         t_next = t_curr + dt
@@ -350,10 +369,18 @@ def stpp_hawkes_sample(
         room = count < n_max
         accept = accept_in_box & in_window & room
 
-        write_idx = jnp.where(accept, count, n_max)  # ``n_max`` = sentinel
-        locs = locs.at[write_idx].set(jnp.where(accept, s_cand, locs[write_idx]))
-        times = times.at[write_idx].set(jnp.where(accept, t_next, times[write_idx]))
-        mask = mask.at[write_idx].set(jnp.where(accept, True, mask[write_idx]))
+        # Clip the write index to ``[0, n_max - 1]``. Using ``n_max`` as
+        # a sentinel for rejected candidates is undefined: in JAX the
+        # default ``promise_in_bounds`` semantics make scatter/gather at
+        # that index backend-dependent and can corrupt buffer state on
+        # rejection-heavy runs (Copilot/Codex P1 in PR #13 review). The
+        # ``accept`` flag in ``jnp.where`` already keeps rejected
+        # candidates from changing the slot — the clip just keeps the
+        # index in range for the no-op read-modify-write.
+        safe_idx = jnp.clip(count, 0, n_max - 1)
+        locs = locs.at[safe_idx].set(jnp.where(accept, s_cand, locs[safe_idx]))
+        times = times.at[safe_idx].set(jnp.where(accept, t_next, times[safe_idx]))
+        mask = mask.at[safe_idx].set(jnp.where(accept, True, mask[safe_idx]))
         count = count + accept.astype(jnp.int32)
         # Always advance t_curr by dt — even rejected candidates consume
         # the exponential clock per Ogata's argument.

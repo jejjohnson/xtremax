@@ -322,13 +322,16 @@ def ipp_spatiotemporal_pearson_residuals(
         spatial_flat = spatial_flat + spatial_idx[:, axis] * stride
         stride = stride * n_spatial_bins
     cell_idx = temporal_idx * (n_spatial_bins**d) + spatial_flat
-    masked_idx = jnp.where(mask, cell_idx, -1)
 
     n_cells = n_temporal_bins * (n_spatial_bins**d)
     counts = jnp.zeros(n_cells)
-    counts = counts.at[masked_idx].add(jnp.where(mask, 1.0, 0.0))
-    # The fictitious -1 bucket caught the padding rows; trim it.
-    counts = jnp.where(jnp.arange(n_cells) >= 0, counts, 0.0)
+    # Scatter-add a per-event weight: 1 for real events, 0 for padding.
+    # Padding rows still scatter into a real cell (the digitize/clip
+    # path collapses them to the boundary cell), but the 0 weight
+    # leaves it untouched. The earlier sentinel-bucket trick was a
+    # no-op under JAX's negative-index wrap, so drop it (Codex P1 in
+    # PR #13 review).
+    counts = counts.at[cell_idx].add(jnp.where(mask, 1.0, 0.0))
 
     # Per-cell integrated intensity by trapezoid quadrature on a small
     # tensor-product grid inside each cell.
