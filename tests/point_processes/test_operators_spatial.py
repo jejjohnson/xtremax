@@ -64,7 +64,10 @@ class TestInhomogeneousSpatialPP:
         def log_lam(s):
             return -0.1 * jnp.sum((s - 5.0) ** 2, axis=-1) + jnp.log(2.0)
 
-        op = InhomogeneousSpatialPP(log_lam, domain)
+        # Peak intensity is at the centre with value ``2``; pass a true
+        # upper bound (``lambda_max=2.0``) so the thinning sampler can
+        # construct an exact envelope.
+        op = InhomogeneousSpatialPP(log_lam, domain, lambda_max=2.0)
         locs, mask, _ = op.sample(random.PRNGKey(0), max_candidates=256)
         lp = op.log_prob(locs, mask)
         assert jnp.isfinite(lp)

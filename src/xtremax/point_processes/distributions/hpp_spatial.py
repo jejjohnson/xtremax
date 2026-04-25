@@ -39,14 +39,21 @@ class HomogeneousSpatialPP(dist.Distribution):
         validate_args: bool | None = None,
     ) -> None:
         self.rate = jnp.asarray(rate)
+        if self.rate.shape != ():
+            raise ValueError(
+                "HomogeneousSpatialPP distribution requires a scalar `rate`; "
+                f"got shape {self.rate.shape}. Spatial sampling produces "
+                "variable-length point patterns and is not batch-safe at the "
+                "distribution layer — vmap over `rate` at the operator layer "
+                "(`xtremax.point_processes.operators.HomogeneousSpatialPP`) "
+                "if you need batched draws."
+            )
         self.domain = domain
         self._max_events = int(max_events)
         self._op = _HppSpatialOp(self.rate, self.domain)
-        # ``rate`` is the only parameter that can be batched here; the
-        # domain is treated as a fixed structural element of the
-        # distribution (mirrors the temporal HPP that batches over rate
-        # but not over the observation window in any meaningful way).
-        super().__init__(batch_shape=self.rate.shape, validate_args=validate_args)
+        # Empty batch_shape — `rate` is required scalar so the
+        # distribution carries no batched axes.
+        super().__init__(batch_shape=(), validate_args=validate_args)
 
     @property
     def max_events(self) -> int:

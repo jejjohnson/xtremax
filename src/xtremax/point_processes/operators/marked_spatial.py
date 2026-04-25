@@ -25,6 +25,7 @@ import jax.numpy as jnp
 import numpyro.distributions as dist
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
+from xtremax.point_processes._domain import RectangularDomain
 from xtremax.point_processes.primitives.marked_spatial import (
     sample_spatial_marks_at_locations,
     spatial_marks_log_prob,
@@ -66,7 +67,7 @@ class MarkedSpatialPP(eqx.Module):
         self.mark_dim = mark_dim
 
     @property
-    def domain(self) -> Array:
+    def domain(self) -> RectangularDomain:
         """Forward to the ground operator's ``domain``."""
         return self.ground.domain
 

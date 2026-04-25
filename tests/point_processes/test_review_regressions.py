@@ -346,3 +346,205 @@ class TestGeneralHawkesBatchShape:
             mu=batched_mu, kernel=kernel, observation_window=5.0, max_events=64
         )
         assert d.batch_shape == (3,)
+
+
+# ---------------------------------------------------------------------
+# Spatial PP review-round fixes
+# ---------------------------------------------------------------------
+
+
+class TestSpatialIppLambdaMaxRequired:
+    """Codex P1: thinning sampler must not silently use a non-bound.
+
+    Previously the IPP operator fell back to ``2 Λ(D) / |D|`` (twice
+    the mean intensity), which is not a true upper bound — it
+    silently biased the sampler low in peaks. The operator now raises
+    when no valid bound is available.
+    """
+
+    def test_unset_lambda_max_raises(self):
+        from xtremax.point_processes import RectangularDomain
+        from xtremax.point_processes.operators import InhomogeneousSpatialPP
+
+        domain = RectangularDomain.from_size(jnp.array([4.0, 4.0]))
+
+        def log_lam(s):
+            return jnp.full(s.shape[:-1], jnp.log(0.5))
+
+        op = InhomogeneousSpatialPP(log_lam, domain)
+        with pytest.raises(ValueError, match="lambda_max"):
+            op.sample(jax.random.PRNGKey(0), max_candidates=64)
+
+    def test_pinned_lambda_max_used(self):
+        from xtremax.point_processes import RectangularDomain
+        from xtremax.point_processes.operators import InhomogeneousSpatialPP
+
+        domain = RectangularDomain.from_size(jnp.array([4.0, 4.0]))
+
+        def log_lam(s):
+            return jnp.full(s.shape[:-1], jnp.log(0.5))
+
+        op = InhomogeneousSpatialPP(log_lam, domain, lambda_max=0.5)
+        # Should not raise; effective bound matches the pinned value.
+        assert jnp.allclose(op.effective_lambda_max(), 0.5)
+
+
+class TestHomogeneousSpatialPPRejectsBatchedRate:
+    """Codex P2 / Copilot: spatial HPP distribution must reject batched rates.
+
+    The sampler doesn't support batched rates; declaring
+    ``batch_shape=rate.shape`` would let NumPyro plate the
+    distribution but the actual sample call would silently fail.
+    """
+
+    def test_scalar_rate_ok(self):
+        from xtremax.point_processes import RectangularDomain
+        from xtremax.point_processes.distributions import HomogeneousSpatialPP
+
+        domain = RectangularDomain.from_size(jnp.array([4.0, 4.0]))
+        d = HomogeneousSpatialPP(rate=0.5, domain=domain)
+        assert d.batch_shape == ()
+
+    def test_batched_rate_raises(self):
+        from xtremax.point_processes import RectangularDomain
+        from xtremax.point_processes.distributions import HomogeneousSpatialPP
+
+        domain = RectangularDomain.from_size(jnp.array([4.0, 4.0]))
+        with pytest.raises(ValueError, match="scalar"):
+            HomogeneousSpatialPP(rate=jnp.array([0.5, 1.0]), domain=domain)
+
+
+class TestSpatialMarksPaddingSupportAware:
+    """Codex P2 / Copilot: padding-mark substitute must be in-support.
+
+    A literal ``1.0`` is not inside Beta or Uniform(2, 3) supports
+    and produces ``-inf`` log-probs / NaN gradients at padding rows.
+    The fix queries ``d.support.feasible_like(m_i)`` so the padding
+    value is always in-support and dtype-preserving.
+    """
+
+    def test_uniform_2_3_padding(self):
+        # Uniform(2, 3) — old fallback ``1.0`` is below the support.
+        from xtremax.point_processes.primitives import spatial_marks_log_prob
+
+        locations = jnp.array([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]])
+        marks = jnp.array([2.5, 2.7, 0.0])  # padding mark at row 2
+        mask = jnp.array([True, True, False])
+        lp = spatial_marks_log_prob(
+            locations, marks, mask, lambda s: dist.Uniform(2.0, 3.0)
+        )
+        assert jnp.isfinite(lp)
+        # Hand-compute the unmasked sum.
+        expected = jnp.sum(dist.Uniform(2.0, 3.0).log_prob(marks[:2]))
+        assert jnp.allclose(lp, expected)
+
+    def test_beta_padding(self):
+        # Beta on (0, 1) — endpoints are not in support; ``1.0`` would
+        # fail and so would ``0.0``. ``feasible_like`` returns 0.5.
+        from xtremax.point_processes.primitives import spatial_marks_log_prob
+
+        locations = jnp.array([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]])
+        marks = jnp.array([0.3, 0.7, 0.0])
+        mask = jnp.array([True, True, False])
+        lp = spatial_marks_log_prob(
+            locations, marks, mask, lambda s: dist.Beta(2.0, 5.0)
+        )
+        assert jnp.isfinite(lp)
+
+    def test_padding_log_prob_carries_finite_grad(self):
+        # Without the support-aware substitute, gradients through the
+        # masked branch were NaN even though the value itself was
+        # masked out. Verify the gradient is finite end-to-end.
+        from xtremax.point_processes.primitives import spatial_marks_log_prob
+
+        locations = jnp.array([[0.0, 0.0], [1.0, 1.0]])
+        marks = jnp.array([2.5, 0.0])
+        mask = jnp.array([True, False])
+
+        def loss(rate):
+            return spatial_marks_log_prob(
+                locations,
+                marks,
+                mask,
+                lambda s: dist.Gamma(concentration=rate, rate=1.0),
+            )
+
+        g = jax.grad(loss)(2.0)
+        assert jnp.isfinite(g)
+
+
+class TestMarkSamplerPreservesDiscreteDtype:
+    """Copilot: padding for discrete-mark draws must preserve int dtype."""
+
+    def test_categorical_sample_dtype(self):
+        from xtremax.point_processes.primitives import (
+            sample_spatial_marks_at_locations,
+        )
+
+        locations = jnp.array([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]])
+        mask = jnp.array([True, True, False])
+        marks = sample_spatial_marks_at_locations(
+            jax.random.PRNGKey(0),
+            locations,
+            mask,
+            lambda s: dist.Categorical(probs=jnp.array([0.5, 0.3, 0.2])),
+        )
+        # Categorical draws are integer-valued; padding mustn't promote
+        # the dtype to float.
+        assert jnp.issubdtype(marks.dtype, jnp.integer)
+
+
+class TestRectangularDomainValidation:
+    """Copilot: ``RectangularDomain.__init__`` validates bounds."""
+
+    def test_shape_mismatch_raises(self):
+        from xtremax.point_processes import RectangularDomain
+
+        with pytest.raises(ValueError, match="shape"):
+            RectangularDomain(lo=jnp.zeros(2), hi=jnp.ones(3))
+
+    def test_inverted_bounds_raise(self):
+        from xtremax.point_processes import RectangularDomain
+
+        with pytest.raises(ValueError, match="hi > lo"):
+            RectangularDomain(lo=jnp.array([1.0, 2.0]), hi=jnp.array([3.0, 1.0]))
+
+
+class TestHaltonDynamicPrimes:
+    """Copilot: Halton QMC must not hard-cap at d ≤ 12."""
+
+    def test_d13_runs(self):
+        from xtremax.point_processes import (
+            RectangularDomain,
+            integrate_log_intensity_spatial,
+        )
+
+        domain = RectangularDomain.from_size(jnp.full((13,), 1.0))
+
+        def log_lam(s):
+            return jnp.full(s.shape[:-1], 0.0)  # constant intensity 1
+
+        result = integrate_log_intensity_spatial(
+            log_lam, domain, n_points=512, method="qmc"
+        )
+        # ∫_[0,1]^13 1 ds = 1.
+        assert jnp.allclose(result, 1.0, rtol=1e-3)
+
+
+class TestMarkedSpatialDomainReturnsRectangularDomain:
+    """Copilot: ``MarkedSpatialPP.domain`` returns a RectangularDomain."""
+
+    def test_domain_has_volume(self):
+        from xtremax.point_processes import RectangularDomain
+        from xtremax.point_processes.operators import (
+            HomogeneousSpatialPP,
+            MarkedSpatialPP,
+        )
+
+        domain = RectangularDomain.from_size(jnp.array([4.0, 4.0]))
+        ground = HomogeneousSpatialPP(rate=0.5, domain=domain)
+        mpp = MarkedSpatialPP(
+            ground=ground, mark_distribution_fn=lambda s: dist.Exponential(1.0)
+        )
+        # If the return type were ``Array``, ``.volume()`` would fail.
+        assert jnp.allclose(mpp.domain.volume(), 16.0)

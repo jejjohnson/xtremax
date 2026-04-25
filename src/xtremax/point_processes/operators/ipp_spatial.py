@@ -50,10 +50,15 @@ class InhomogeneousSpatialPP(eqx.Module):
             stale values silently bias the likelihood. ``None``
             triggers quadrature on every call.
         lambda_max: Optional upper bound on ``λ(s)`` over ``D``,
-            required by :meth:`sample`. ``None`` falls back to the
-            conservative bound ``2 Λ / |D|`` (fine for unimodal
-            surfaces; pass a tighter bound for sharply peaked
-            intensities).
+            required by :meth:`sample`. Must be a *true* upper bound
+            for thinning to be exact — passing too small a value
+            silently biases the sampled process low in peaks. If
+            ``None``, the operator queries
+            ``log_intensity_fn.max_intensity()`` when the intensity
+            module exposes it and otherwise raises at sample time.
+            There is no automatic fallback (e.g. ``2 Λ / |D|``)
+            because no estimator can guarantee an upper bound for an
+            arbitrary user-supplied intensity.
         n_integration_points: Static node count for quadrature
             (trapezoid total nodes or QMC samples).
         integration_method: ``"qmc"`` (default) or ``"trapezoid"``.
@@ -119,15 +124,28 @@ class InhomogeneousSpatialPP(eqx.Module):
     def effective_lambda_max(self) -> Float[Array, ...]:
         """Return the thinning bound used by :meth:`sample`.
 
-        Prefers the pinned :attr:`lambda_max`; otherwise falls back to
-        the conservative bound :math:`2 \\Lambda(D) / |D|`. The
-        fallback can be loose for sharply peaked intensities — pin a
-        tighter bound when you can.
+        Prefers the pinned :attr:`lambda_max`; otherwise queries the
+        intensity module's ``.max_intensity()`` if it has one (e.g. a
+        :class:`~xtremax.point_processes.operators.temporal.PiecewiseConstantLogIntensity`-style
+        helper that tracks ``log_rates`` and reports
+        ``exp(max(log_rates))`` live). Raises when neither is
+        available — Lewis–Shedler thinning requires a *true* upper
+        bound, and no quadrature-derived estimate (e.g. ``2 Λ / |D|``,
+        twice the mean intensity) can guarantee that for an arbitrary
+        intensity surface.
         """
         if self.lambda_max is not None:
             return self.lambda_max
-        Lambda_D = self.effective_integrated_intensity()
-        return 2.0 * Lambda_D / self.domain.volume()
+        max_intensity = getattr(self.log_intensity_fn, "max_intensity", None)
+        if max_intensity is not None:
+            return max_intensity()
+        raise ValueError(
+            "Cannot sample via thinning: no `lambda_max` pinned on the "
+            "operator and `log_intensity_fn` has no `.max_intensity()` "
+            "method. Pass an upper bound at construction (it must be a "
+            "true upper bound on `λ(s)` over the domain — too small a "
+            "value silently biases the sampler low in intensity peaks)."
+        )
 
     # ------------------------------------------------------------
     # Core distribution API

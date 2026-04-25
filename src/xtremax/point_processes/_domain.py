@@ -11,6 +11,7 @@ this is the same restriction the upstream snippet enforces.
 from __future__ import annotations
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jax import random
 from jax.typing import ArrayLike
@@ -41,8 +42,33 @@ class RectangularDomain(eqx.Module):
     hi: Float[Array, ...]
 
     def __init__(self, lo: ArrayLike, hi: ArrayLike) -> None:
-        self.lo = jnp.asarray(lo)
-        self.hi = jnp.asarray(hi)
+        lo_arr = jnp.asarray(lo)
+        hi_arr = jnp.asarray(hi)
+        # Validate eagerly at construction. Shape and ordering errors
+        # are user-facing input bugs that should surface here rather
+        # than producing silently negative volumes / out-of-box draws
+        # downstream. Using ``bool(...)`` forces concretisation, which
+        # is fine because RectangularDomain is invariably built from
+        # static (non-traced) bounds; tracing through __init__ would
+        # be a misuse.
+        if lo_arr.shape != hi_arr.shape:
+            raise ValueError(
+                f"RectangularDomain: `lo` shape {lo_arr.shape} does not "
+                f"match `hi` shape {hi_arr.shape}."
+            )
+        try:
+            if not bool(jnp.all(hi_arr > lo_arr)):
+                raise ValueError(
+                    f"RectangularDomain requires `hi > lo` elementwise; "
+                    f"got lo={lo_arr.tolist()}, hi={hi_arr.tolist()}."
+                )
+        except jax.errors.ConcretizationTypeError as exc:  # pragma: no cover
+            # Building a domain inside a trace (e.g. inside ``jit``) is
+            # not the supported path; skip the eager check rather than
+            # erroring out of an otherwise valid jit-compiled function.
+            del exc
+        self.lo = lo_arr
+        self.hi = hi_arr
 
     @classmethod
     def from_size(cls, size: ArrayLike) -> RectangularDomain:

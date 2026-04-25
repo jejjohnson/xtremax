@@ -53,7 +53,9 @@ class TestInhomogeneousSpatialPPDistribution:
         def log_lam(s):
             return -0.1 * jnp.sum((s - 5.0) ** 2, axis=-1) + jnp.log(2.0)
 
-        d_pp = InhomogeneousSpatialPP(log_lam, domain, max_candidates=256)
+        d_pp = InhomogeneousSpatialPP(
+            log_lam, domain, lambda_max=2.0, max_candidates=256
+        )
         locs, mask = d_pp.sample(random.PRNGKey(0))
         lp = d_pp.log_prob((locs, mask))
         assert jnp.isfinite(lp)
@@ -81,7 +83,8 @@ class TestMarkedSpatialPPDistribution:
         def log_lam(s):
             return jnp.full(s.shape[:-1], jnp.log(0.3))
 
-        ipp_op = IppOp(log_lam, domain)
+        # Constant log-intensity of 0.3 — pass a tight upper bound.
+        ipp_op = IppOp(log_lam, domain, lambda_max=0.3)
         mark_dist = dist.Exponential(rate=1.0)
         d_pp = MarkedSpatialPP(
             ground=ipp_op,
