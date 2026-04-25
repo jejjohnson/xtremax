@@ -1,0 +1,2611 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="JAX/NumPyro-native library for extreme value modeling — custom distributions, Bayesian models, and spatiotemporal data extraction.">
+      
+      
+        <meta name="author" content="J. Emmanuel Johnson">
+      
+      
+      
+        <link rel="prev" href="../">
+      
+      
+        <link rel="next" href="../components/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Primitives - xtremax</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#layer-0-primitives" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="xtremax" class="md-header__button md-logo" aria-label="xtremax" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            xtremax
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Primitives
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/jejjohnson/xtremax" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jejjohnson/xtremax
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../notebooks/example_demo/" class="md-tabs__link">
+          
+  
+  
+  Examples
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../../" class="md-tabs__link">
+          
+  
+  
+  Design
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../api/reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  API Reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../contributing/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Changelog
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="xtremax" class="md-nav__button md-logo" aria-label="xtremax" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    xtremax
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/jejjohnson/xtremax" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jejjohnson/xtremax
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Examples
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/example_demo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Demo
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/hpp_from_scratch_and_numpyro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HPP — from scratch + NumPyro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/ipp_from_scratch_and_numpyro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    IPP — from scratch + NumPyro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/renewal_from_scratch_and_numpyro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Renewal — from scratch + NumPyro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/hawkes_from_scratch_and_numpyro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hawkes — from scratch + NumPyro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/marked_from_scratch_and_numpyro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Marked TPP — from scratch + NumPyro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/thinning_from_scratch_and_numpyro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Thinning / observation op — from scratch + NumPyro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/hpp_spatial_from_scratch_and_numpyro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HPP-spatial — from scratch + NumPyro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/ipp_spatial_from_scratch_and_numpyro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    IPP-spatial — from scratch + NumPyro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/marked_spatial_from_scratch_and_numpyro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Marked spatial — from scratch + NumPyro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/hpp_spatiotemporal_from_scratch_and_numpyro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HPP-spatiotemporal — from scratch + NumPyro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/ipp_spatiotemporal_from_scratch_and_numpyro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    IPP-spatiotemporal — from scratch + NumPyro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/marked_spatiotemporal_from_scratch_and_numpyro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Marked spatiotemporal — from scratch + NumPyro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/hawkes_spatiotemporal_from_scratch_and_numpyro/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hawkes-spatiotemporal — from scratch + NumPyro
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../notebooks/latent_ode_ipp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Latent ODE for irregular IPPs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../vision/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Vision
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../boundaries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Boundaries
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../decisions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decisions
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3_6" id="__nav_3_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Primitives
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Primitives
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#gev-functions-xtremax_srcgev" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GEV Functions (xtremax._src.gev)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="GEV Functions (xtremax._src.gev)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gev_log_probx-loc-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gev_log_prob(x, loc, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gev_cdfx-loc-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gev_cdf(x, loc, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gev_icdfq-loc-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gev_icdf(q, loc, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gev_return_levelperiod-loc-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gev_return_level(period, loc, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gev_meanloc-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gev_mean(loc, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gev_varianceloc-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gev_variance(loc, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gpd-functions-xtremax_srcgpd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GPD Functions (xtremax._src.gpd)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="GPD Functions (xtremax._src.gpd)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gpd_log_proby-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gpd_log_prob(y, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gpd_cdfy-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gpd_cdf(y, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gpd_survivaly-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gpd_survival(y, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gpd_return_levelperiod-scale-shape-rate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gpd_return_level(period, scale, shape, rate)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gpd_mean_excessscale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gpd_mean_excess(scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#point-process-functions-xtremax_srcpoint_process" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Point Process Functions (xtremax._src.point_process)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Point Process Functions (xtremax._src.point_process)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#poisson_log_likelihoodevent_times-rate-t" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        poisson_log_likelihood(event_times, rate, T)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#inhomogeneous_poisson_log_likelihoodevent_times-log_intensity_fn-t" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        inhomogeneous_poisson_log_likelihood(event_times, log_intensity_fn, T)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hawkes_log_likelihoodevent_times-background_rate-alpha-beta" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        hawkes_log_likelihood(event_times, background_rate, alpha, beta)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#extremal_indexexceedances-threshold-run_length" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        extremal_index(exceedances, threshold, run_length)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#max-stable-functions-xtremax_srcmax_stable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Max-Stable Functions (xtremax._src.max_stable)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Max-Stable Functions (xtremax._src.max_stable)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#brown_resnick_extremal_coeffh-variogram_fn" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        brown_resnick_extremal_coeff(h, variogram_fn)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#smith_extremal_coeffh-cov_matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        smith_extremal_coeff(h, cov_matrix)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#schlather_extremal_coeffh-correlation_fn" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        schlather_extremal_coeff(h, correlation_fn)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#extremal_t_extremal_coeffh-correlation_fn-df" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        extremal_t_extremal_coeff(h, correlation_fn, df)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pairwise_log_likelihoodz-extremal_coeff_fn-coordinates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        pairwise_log_likelihood(z, extremal_coeff_fn, coordinates)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#madogramdata-coordinates-n_bins" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        madogram(data, coordinates, n_bins)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#variogram-functions-xtremax_srcvariogram" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Variogram Functions (xtremax._src.variogram)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Variogram Functions (xtremax._src.variogram)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#power_variogramh-range-smoothness" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        power_variogram(h, range, smoothness)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#matern_variogramh-range-smoothness-sill" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        matern_variogram(h, range, smoothness, sill)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../components/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Components
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_7" id="__nav_3_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Examples
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/primitives/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Primitives
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/components/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Components
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Integration
+  
+
+    
+  </span>
+  
+  
+    
+  
+  
+    <span class="md-status md-status--draft"></span>
+  
+
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#gev-functions-xtremax_srcgev" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GEV Functions (xtremax._src.gev)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="GEV Functions (xtremax._src.gev)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gev_log_probx-loc-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gev_log_prob(x, loc, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gev_cdfx-loc-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gev_cdf(x, loc, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gev_icdfq-loc-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gev_icdf(q, loc, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gev_return_levelperiod-loc-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gev_return_level(period, loc, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gev_meanloc-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gev_mean(loc, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gev_varianceloc-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gev_variance(loc, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gpd-functions-xtremax_srcgpd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GPD Functions (xtremax._src.gpd)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="GPD Functions (xtremax._src.gpd)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gpd_log_proby-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gpd_log_prob(y, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gpd_cdfy-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gpd_cdf(y, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gpd_survivaly-scale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gpd_survival(y, scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gpd_return_levelperiod-scale-shape-rate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gpd_return_level(period, scale, shape, rate)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gpd_mean_excessscale-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gpd_mean_excess(scale, shape)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#point-process-functions-xtremax_srcpoint_process" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Point Process Functions (xtremax._src.point_process)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Point Process Functions (xtremax._src.point_process)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#poisson_log_likelihoodevent_times-rate-t" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        poisson_log_likelihood(event_times, rate, T)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#inhomogeneous_poisson_log_likelihoodevent_times-log_intensity_fn-t" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        inhomogeneous_poisson_log_likelihood(event_times, log_intensity_fn, T)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hawkes_log_likelihoodevent_times-background_rate-alpha-beta" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        hawkes_log_likelihood(event_times, background_rate, alpha, beta)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#extremal_indexexceedances-threshold-run_length" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        extremal_index(exceedances, threshold, run_length)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#max-stable-functions-xtremax_srcmax_stable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Max-Stable Functions (xtremax._src.max_stable)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Max-Stable Functions (xtremax._src.max_stable)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#brown_resnick_extremal_coeffh-variogram_fn" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        brown_resnick_extremal_coeff(h, variogram_fn)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#smith_extremal_coeffh-cov_matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        smith_extremal_coeff(h, cov_matrix)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#schlather_extremal_coeffh-correlation_fn" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        schlather_extremal_coeff(h, correlation_fn)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#extremal_t_extremal_coeffh-correlation_fn-df" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        extremal_t_extremal_coeff(h, correlation_fn, df)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pairwise_log_likelihoodz-extremal_coeff_fn-coordinates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        pairwise_log_likelihood(z, extremal_coeff_fn, coordinates)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#madogramdata-coordinates-n_bins" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        madogram(data, coordinates, n_bins)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#variogram-functions-xtremax_srcvariogram" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Variogram Functions (xtremax._src.variogram)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Variogram Functions (xtremax._src.variogram)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#power_variogramh-range-smoothness" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        power_variogram(h, range, smoothness)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#matern_variogramh-range-smoothness-sill" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        matern_variogram(h, range, smoothness, sill)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="layer-0-primitives">Layer 0 — Primitives<a class="headerlink" href="#layer-0-primitives" title="Permanent link">&para;</a></h1>
+<p>Pure JAX functions. Stateless, differentiable, composable. No classes, no NumPyro dependency, no xarray — just <code>(Array, ...) → Array</code>.</p>
+<p>All functions are compatible with <code>jax.jit</code>, <code>jax.grad</code>, and <code>jax.vmap</code>. They implement the mathematical core of extreme value theory; the NumPyro <code>Distribution</code> wrappers at Layer 1 compose these into the standard probabilistic interface.</p>
+<hr />
+<h2 id="gev-functions-xtremax_srcgev">GEV Functions (<code>xtremax._src.gev</code>)<a class="headerlink" href="#gev-functions-xtremax_srcgev" title="Permanent link">&para;</a></h2>
+<p>The Generalized Extreme Value distribution unifies three classical types under one parameterization.</p>
+<p><strong>CDF:</strong></p>
+<div class="arithmatex">\[F(x; \mu, \sigma, \xi) = \exp\!\left\{-\left[1 + \xi\frac{x - \mu}{\sigma}\right]^{-1/\xi}\right\}\]</div>
+<p>with the convention <span class="arithmatex">\(\xi = 0 \Rightarrow F(x) = \exp\{-\exp(-(x-\mu)/\sigma)\}\)</span> (Gumbel limit).</p>
+<p><strong>Support:</strong> <span class="arithmatex">\(\{x : 1 + \xi(x-\mu)/\sigma &gt; 0\}\)</span>.</p>
+<h3 id="gev_log_probx-loc-scale-shape"><code>gev_log_prob(x, loc, scale, shape)</code><a class="headerlink" href="#gev_log_probx-loc-scale-shape" title="Permanent link">&para;</a></h3>
+<p><strong>Mathematical definition:</strong></p>
+<div class="arithmatex">\[\log f(x; \mu, \sigma, \xi) = -\log\sigma - (1 + 1/\xi)\log t - t^{-1/\xi}\]</div>
+<p>where <span class="arithmatex">\(t = 1 + \xi(x - \mu)/\sigma\)</span>. For <span class="arithmatex">\(\xi = 0\)</span>: <span class="arithmatex">\(\log f = -\log\sigma - s - e^{-s}\)</span> where <span class="arithmatex">\(s = (x-\mu)/\sigma\)</span>.</p>
+<p><strong>Numerical method:</strong> Uses <code>jnp.where</code> to branch between <span class="arithmatex">\(\xi \neq 0\)</span> and <span class="arithmatex">\(\xi \approx 0\)</span> (Gumbel) to avoid division by zero. Gradient-safe via JAX autodiff.</p>
+<p><strong>Complexity:</strong> <span class="arithmatex">\(O(N)\)</span> element-wise.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">gev_log_prob</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">x</span><span class="p">:</span> <span class="n">Float</span><span class="p">[</span><span class="n">Array</span><span class="p">,</span> <span class="s2">&quot;...&quot;</span><span class="p">],</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">loc</span><span class="p">:</span> <span class="n">Float</span><span class="p">[</span><span class="n">Array</span><span class="p">,</span> <span class="s2">&quot;...&quot;</span><span class="p">],</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">scale</span><span class="p">:</span> <span class="n">Float</span><span class="p">[</span><span class="n">Array</span><span class="p">,</span> <span class="s2">&quot;...&quot;</span><span class="p">],</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">shape</span><span class="p">:</span> <span class="n">Float</span><span class="p">[</span><span class="n">Array</span><span class="p">,</span> <span class="s2">&quot;...&quot;</span><span class="p">],</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Float</span><span class="p">[</span><span class="n">Array</span><span class="p">,</span> <span class="s2">&quot;...&quot;</span><span class="p">]:</span>
+</code></pre></div>
+<h3 id="gev_cdfx-loc-scale-shape"><code>gev_cdf(x, loc, scale, shape)</code><a class="headerlink" href="#gev_cdfx-loc-scale-shape" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[F(x) = \exp\!\left\{-t^{-1/\xi}\right\}, \quad t = 1 + \xi(x - \mu)/\sigma\]</div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">gev_cdf</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">loc</span><span class="p">,</span> <span class="n">scale</span><span class="p">,</span> <span class="n">shape</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Array</span><span class="p">:</span>
+</code></pre></div>
+<h3 id="gev_icdfq-loc-scale-shape"><code>gev_icdf(q, loc, scale, shape)</code><a class="headerlink" href="#gev_icdfq-loc-scale-shape" title="Permanent link">&para;</a></h3>
+<p><strong>Quantile function (inverse CDF):</strong></p>
+<div class="arithmatex">\[F^{-1}(q) = \mu + \frac{\sigma}{\xi}\left[(-\log q)^{-\xi} - 1\right]\]</div>
+<p>For <span class="arithmatex">\(\xi = 0\)</span>: <span class="arithmatex">\(F^{-1}(q) = \mu - \sigma \log(-\log q)\)</span>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">gev_icdf</span><span class="p">(</span><span class="n">q</span><span class="p">,</span> <span class="n">loc</span><span class="p">,</span> <span class="n">scale</span><span class="p">,</span> <span class="n">shape</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Array</span><span class="p">:</span>
+</code></pre></div>
+<h3 id="gev_return_levelperiod-loc-scale-shape"><code>gev_return_level(period, loc, scale, shape)</code><a class="headerlink" href="#gev_return_levelperiod-loc-scale-shape" title="Permanent link">&para;</a></h3>
+<p><strong><span class="arithmatex">\(T\)</span>-year return level:</strong></p>
+<div class="arithmatex">\[z_T = F^{-1}(1 - 1/T) = \mu + \frac{\sigma}{\xi}\left[(-\log(1 - 1/T))^{-\xi} - 1\right]\]</div>
+<p>This is the level expected to be exceeded on average once every <span class="arithmatex">\(T\)</span> years.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">gev_return_level</span><span class="p">(</span><span class="n">period</span><span class="p">,</span> <span class="n">loc</span><span class="p">,</span> <span class="n">scale</span><span class="p">,</span> <span class="n">shape</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Array</span><span class="p">:</span>
+</code></pre></div>
+<h3 id="gev_meanloc-scale-shape"><code>gev_mean(loc, scale, shape)</code><a class="headerlink" href="#gev_meanloc-scale-shape" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[\mathbb{E}[X] = \mu + \sigma \frac{\Gamma(1 - \xi) - 1}{\xi}, \quad \xi &lt; 1\]</div>
+<p>Undefined for <span class="arithmatex">\(\xi \geq 1\)</span> (infinite mean — heavy tail).</p>
+<h3 id="gev_varianceloc-scale-shape"><code>gev_variance(loc, scale, shape)</code><a class="headerlink" href="#gev_varianceloc-scale-shape" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[\operatorname{Var}(X) = \frac{\sigma^2}{\xi^2}\left[\Gamma(1 - 2\xi) - \Gamma^2(1 - \xi)\right], \quad \xi &lt; 1/2\]</div>
+<hr />
+<h2 id="gpd-functions-xtremax_srcgpd">GPD Functions (<code>xtremax._src.gpd</code>)<a class="headerlink" href="#gpd-functions-xtremax_srcgpd" title="Permanent link">&para;</a></h2>
+<p>The Generalized Pareto Distribution models threshold exceedances <span class="arithmatex">\(Y = X - u \mid X &gt; u\)</span>.</p>
+<p><strong>CDF:</strong></p>
+<div class="arithmatex">\[G(y; \sigma, \xi) = 1 - \left(1 + \xi \frac{y}{\sigma}\right)^{-1/\xi}, \quad y &gt; 0\]</div>
+<p>For <span class="arithmatex">\(\xi = 0\)</span>: <span class="arithmatex">\(G(y) = 1 - \exp(-y/\sigma)\)</span> (exponential).</p>
+<h3 id="gpd_log_proby-scale-shape"><code>gpd_log_prob(y, scale, shape)</code><a class="headerlink" href="#gpd_log_proby-scale-shape" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[\log g(y; \sigma, \xi) = -\log\sigma - (1 + 1/\xi)\log\left(1 + \xi y/\sigma\right)\]</div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">gpd_log_prob</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">scale</span><span class="p">,</span> <span class="n">shape</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Array</span><span class="p">:</span>
+</code></pre></div>
+<h3 id="gpd_cdfy-scale-shape"><code>gpd_cdf(y, scale, shape)</code><a class="headerlink" href="#gpd_cdfy-scale-shape" title="Permanent link">&para;</a></h3>
+<h3 id="gpd_survivaly-scale-shape"><code>gpd_survival(y, scale, shape)</code><a class="headerlink" href="#gpd_survivaly-scale-shape" title="Permanent link">&para;</a></h3>
+<p><strong>Survival function:</strong> <span class="arithmatex">\(\bar{G}(y) = (1 + \xi y/\sigma)^{-1/\xi}\)</span></p>
+<h3 id="gpd_return_levelperiod-scale-shape-rate"><code>gpd_return_level(period, scale, shape, rate)</code><a class="headerlink" href="#gpd_return_levelperiod-scale-shape-rate" title="Permanent link">&para;</a></h3>
+<p><strong><span class="arithmatex">\(T\)</span>-year return level for POT:</strong></p>
+<div class="arithmatex">\[z_T = u + \frac{\sigma}{\xi}\left[(\lambda T)^{\xi} - 1\right]\]</div>
+<p>where <span class="arithmatex">\(u\)</span> is the threshold and <span class="arithmatex">\(\lambda\)</span> is the exceedance rate (expected exceedances per year).</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">gpd_return_level</span><span class="p">(</span><span class="n">period</span><span class="p">,</span> <span class="n">scale</span><span class="p">,</span> <span class="n">shape</span><span class="p">,</span> <span class="n">rate</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Array</span><span class="p">:</span>
+</code></pre></div>
+<h3 id="gpd_mean_excessscale-shape"><code>gpd_mean_excess(scale, shape)</code><a class="headerlink" href="#gpd_mean_excessscale-shape" title="Permanent link">&para;</a></h3>
+<p><strong>Mean excess function:</strong> <span class="arithmatex">\(\mathbb{E}[Y - u \mid Y &gt; u] = \frac{\sigma + \xi u}{1 - \xi}\)</span> for <span class="arithmatex">\(\xi &lt; 1\)</span>.</p>
+<hr />
+<h2 id="point-process-functions-xtremax_srcpoint_process">Point Process Functions (<code>xtremax._src.point_process</code>)<a class="headerlink" href="#point-process-functions-xtremax_srcpoint_process" title="Permanent link">&para;</a></h2>
+<h3 id="poisson_log_likelihoodevent_times-rate-t"><code>poisson_log_likelihood(event_times, rate, T)</code><a class="headerlink" href="#poisson_log_likelihoodevent_times-rate-t" title="Permanent link">&para;</a></h3>
+<p><strong>Homogeneous Poisson process log-likelihood:</strong></p>
+<div class="arithmatex">\[\log L = \sum_{i=1}^n \log \lambda - \lambda T\]</div>
+<p>where <span class="arithmatex">\(\lambda\)</span> is the rate and <span class="arithmatex">\(T\)</span> is the observation window.</p>
+<h3 id="inhomogeneous_poisson_log_likelihoodevent_times-log_intensity_fn-t"><code>inhomogeneous_poisson_log_likelihood(event_times, log_intensity_fn, T)</code><a class="headerlink" href="#inhomogeneous_poisson_log_likelihoodevent_times-log_intensity_fn-t" title="Permanent link">&para;</a></h3>
+<p><strong>Inhomogeneous Poisson process:</strong></p>
+<div class="arithmatex">\[\log L = \sum_{i=1}^n \log \lambda(t_i) - \int_0^T \lambda(t)\,dt\]</div>
+<p>The integral is approximated numerically (trapezoidal or quadrature).</p>
+<h3 id="hawkes_log_likelihoodevent_times-background_rate-alpha-beta"><code>hawkes_log_likelihood(event_times, background_rate, alpha, beta)</code><a class="headerlink" href="#hawkes_log_likelihoodevent_times-background_rate-alpha-beta" title="Permanent link">&para;</a></h3>
+<p><strong>Hawkes self-exciting process:</strong></p>
+<div class="arithmatex">\[\lambda(t) = \mu + \alpha \sum_{t_i &lt; t} \beta e^{-\beta(t - t_i)}\]</div>
+<div class="arithmatex">\[\log L = \sum_{i=1}^n \log \lambda(t_i) - \mu T - \frac{\alpha}{\beta}\sum_{i=1}^n \left(1 - e^{-\beta(T - t_i)}\right)\]</div>
+<h3 id="extremal_indexexceedances-threshold-run_length"><code>extremal_index(exceedances, threshold, run_length)</code><a class="headerlink" href="#extremal_indexexceedances-threshold-run_length" title="Permanent link">&para;</a></h3>
+<p><strong>Extremal index</strong> <span class="arithmatex">\(\theta \in (0, 1]\)</span> — measures clustering of threshold exceedances. <span class="arithmatex">\(\theta = 1\)</span> means no clustering (independent exceedances). Estimated via the runs method:</p>
+<div class="arithmatex">\[\hat{\theta} = \frac{\text{number of clusters}}{\text{number of exceedances}}\]</div>
+<hr />
+<h2 id="max-stable-functions-xtremax_srcmax_stable">Max-Stable Functions (<code>xtremax._src.max_stable</code>)<a class="headerlink" href="#max-stable-functions-xtremax_srcmax_stable" title="Permanent link">&para;</a></h2>
+<h3 id="brown_resnick_extremal_coeffh-variogram_fn"><code>brown_resnick_extremal_coeff(h, variogram_fn)</code><a class="headerlink" href="#brown_resnick_extremal_coeffh-variogram_fn" title="Permanent link">&para;</a></h3>
+<p><strong>Brown-Resnick extremal coefficient:</strong></p>
+<div class="arithmatex">\[\theta(h) = 2\Phi\!\left(\sqrt{\gamma(h)/2}\right)\]</div>
+<p>where <span class="arithmatex">\(\gamma(h)\)</span> is the semivariogram and <span class="arithmatex">\(\Phi\)</span> is the standard normal CDF.</p>
+<h3 id="smith_extremal_coeffh-cov_matrix"><code>smith_extremal_coeff(h, cov_matrix)</code><a class="headerlink" href="#smith_extremal_coeffh-cov_matrix" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[\theta(h) = 2\Phi\!\left(\sqrt{h^T \Sigma^{-1} h / 2}\right)\]</div>
+<h3 id="schlather_extremal_coeffh-correlation_fn"><code>schlather_extremal_coeff(h, correlation_fn)</code><a class="headerlink" href="#schlather_extremal_coeffh-correlation_fn" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[\theta(h) = 1 + \sqrt{(1 - \rho(h))/2}\]</div>
+<h3 id="extremal_t_extremal_coeffh-correlation_fn-df"><code>extremal_t_extremal_coeff(h, correlation_fn, df)</code><a class="headerlink" href="#extremal_t_extremal_coeffh-correlation_fn-df" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[\theta(h) = 2\,T_{\nu+1}\!\left(\sqrt{(\nu+1)(1 - \rho(h))/(1 + \rho(h))}\right)\]</div>
+<h3 id="pairwise_log_likelihoodz-extremal_coeff_fn-coordinates"><code>pairwise_log_likelihood(z, extremal_coeff_fn, coordinates)</code><a class="headerlink" href="#pairwise_log_likelihoodz-extremal_coeff_fn-coordinates" title="Permanent link">&para;</a></h3>
+<p><strong>Composite pairwise log-likelihood</strong> for max-stable processes (Padoan et al. 2010):</p>
+<div class="arithmatex">\[\ell_c = \sum_{i &lt; j} \log f_{ij}(z_i, z_j)\]</div>
+<p>where <span class="arithmatex">\(f_{ij}\)</span> is the bivariate density derived from the bivariate CDF:</p>
+<div class="arithmatex">\[F_{ij}(z_i, z_j) = \exp\!\left(-\frac{1}{z_i}A\!\left(\frac{\log z_j / z_i}{\log z_j / z_i + \log z_i / z_j}\right) - \frac{1}{z_j}A\!\left(\frac{\log z_i / z_j}{\log z_j / z_i + \log z_i / z_j}\right)\right)\]</div>
+<p>and <span class="arithmatex">\(A\)</span> is the Pickands dependence function determined by <span class="arithmatex">\(\theta\)</span>.</p>
+<h3 id="madogramdata-coordinates-n_bins"><code>madogram(data, coordinates, n_bins)</code><a class="headerlink" href="#madogramdata-coordinates-n_bins" title="Permanent link">&para;</a></h3>
+<p><strong>F-madogram</strong> for nonparametric extremal coefficient estimation:</p>
+<div class="arithmatex">\[\hat{\nu}(h) = \frac{1}{2}\operatorname{mean}\left|F_n(Z(s_1)) - F_n(Z(s_2))\right|, \quad \|s_1 - s_2\| \approx h\]</div>
+<div class="arithmatex">\[\hat{\theta}(h) = \frac{1 + 2\hat{\nu}(h)}{1 - 2\hat{\nu}(h)}\]</div>
+<hr />
+<h2 id="variogram-functions-xtremax_srcvariogram">Variogram Functions (<code>xtremax._src.variogram</code>)<a class="headerlink" href="#variogram-functions-xtremax_srcvariogram" title="Permanent link">&para;</a></h2>
+<p>Used by max-stable models and spatial GP layers.</p>
+<h3 id="power_variogramh-range-smoothness"><code>power_variogram(h, range, smoothness)</code><a class="headerlink" href="#power_variogramh-range-smoothness" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[\gamma(h) = \left(\|h\| / \lambda\right)^\alpha, \quad \alpha \in (0, 2]\]</div>
+<h3 id="matern_variogramh-range-smoothness-sill"><code>matern_variogram(h, range, smoothness, sill)</code><a class="headerlink" href="#matern_variogramh-range-smoothness-sill" title="Permanent link">&para;</a></h3>
+<div class="arithmatex">\[\gamma(h) = \sigma^2 \left(1 - \frac{2^{1-\nu}}{\Gamma(\nu)}\left(\frac{\|h\|}{\lambda}\right)^\nu K_\nu\!\left(\frac{\|h\|}{\lambda}\right)\right)\]</div>
+<p>where <span class="arithmatex">\(K_\nu\)</span> is the modified Bessel function of the second kind.</p>
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "content.code.copy", "content.code.annotate"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3.2.2/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
