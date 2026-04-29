@@ -23,7 +23,7 @@ dependencies = [
     # numpyro 0.20.x uses jax internals that were removed in jax >= 0.7.
     # Pin jax/jaxlib below that ceiling until numpyro catches up.
     "jax>=0.4,<0.7",
-    "jaxlib>=0.4,<0.7",
+    "jaxlib>=0.4,<0.11",
     "numpyro>=0.15",
     "xarray>=2024.0",
     "numpy>=1.26",
