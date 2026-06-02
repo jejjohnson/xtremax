@@ -28,10 +28,13 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from xtremax.primitives.gev import gev_cdf, gev_icdf
+from xtremax.primitives.gev import gev_icdf, gev_survival
 
 
-_FINITE_SUPPORT_MARGIN = 1e-6
+# Hard cap on geometric upper-bracket growth so the solve always terminates
+# under ``jax.jit``. The residual tends to ``-target`` as the level grows, so
+# a valid bracket is reached in only a handful of doublings in practice.
+_MAX_BRACKET_EXPANSIONS = 64
 
 
 def assemble_nonstationary_gev_fields(
@@ -119,7 +122,7 @@ def expected_exceedances(
         Either :math:`\Pr(Y > z)` (``time_axis is None``) or
         :math:`\sum_t \Pr(Y_t > z)` (summed over ``time_axis``).
     """
-    survival = 1.0 - gev_cdf(threshold, loc, scale, shape)
+    survival = gev_survival(threshold, loc, scale, shape)
     if time_axis is None:
         return survival
     return jnp.sum(survival, axis=time_axis)
@@ -185,6 +188,35 @@ def _bisect_monotone_decreasing(
     return 0.5 * (low + high)
 
 
+def _expand_upper_bracket(
+    fn,
+    lower: Float[Array, ...],
+    upper: Float[Array, ...],
+    max_expansions: int = _MAX_BRACKET_EXPANSIONS,
+) -> Float[Array, ...]:
+    """Grow ``upper`` until ``fn(upper) <= 0`` everywhere, for decreasing ``fn``.
+
+    Doubles the gap ``upper - lower`` until the residual is non-positive at the
+    upper end (or the expansion cap is hit), guaranteeing a valid bracket for
+    :func:`_bisect_monotone_decreasing`. Because ``fn`` is monotone decreasing,
+    over-expanding sites that already satisfy ``fn(upper) <= 0`` keeps them
+    valid, so a single ``jnp.any`` stop condition is safe. Uses
+    ``jax.lax.while_loop`` to stay ``jax.jit`` safe.
+    """
+    lower, upper = jnp.broadcast_arrays(jnp.asarray(lower), jnp.asarray(upper))
+
+    def cond(state):
+        up, i = state
+        return jnp.any(fn(up) > 0) & (i < max_expansions)
+
+    def body(state):
+        up, i = state
+        return lower + 2.0 * (up - lower), i + 1
+
+    upper, _ = jax.lax.while_loop(cond, body, (upper, 0))
+    return upper
+
+
 def nonstationary_return_level(
     return_period: Float[Array, ...],
     loc: Float[Array, ...],
@@ -217,8 +249,9 @@ def nonstationary_return_level(
         num_bisection_steps: Bisection iterations for the non-stationary solve.
         lower: Optional lower bracket for the non-stationary solve. Defaults
             to a conservative value derived from ``loc`` and ``scale``.
-        upper: Optional upper bracket. Defaults respect the finite upper
-            endpoint when ``shape < 0``.
+        upper: Optional starting upper bracket. It is grown automatically until
+            it brackets the root, so an underestimate (including the default)
+            is corrected rather than silently returned.
 
     Returns:
         Return level :math:`z_T` with the shape of the non-time dimensions.
@@ -233,28 +266,22 @@ def nonstationary_return_level(
     n_blocks = loc.shape[time_axis]
     target = n_blocks / return_period
 
-    if lower is None:
-        lower = jnp.min(loc - 8.0 * scale, axis=time_axis)
-    if upper is None:
-        unconstrained = jnp.max(loc + 20.0 * scale, axis=time_axis)
-        finite_support = jnp.min(
-            jnp.where(
-                shape < 0, loc - scale / jnp.where(shape < 0, shape, -1.0), jnp.inf
-            ),
-            axis=time_axis,
-        )
-        # Stay just below the finite upper endpoint to avoid evaluating the
-        # GEV exactly at the boundary, where the support check is fragile.
-        upper = jnp.where(
-            jnp.isfinite(finite_support),
-            jnp.minimum(unconstrained, finite_support - _FINITE_SUPPORT_MARGIN),
-            unconstrained,
-        )
-
     def residual(level):
         return (
             expected_exceedances(level, loc, scale, shape, time_axis=time_axis) - target
         )
+
+    if lower is None:
+        lower = jnp.min(loc - 8.0 * scale, axis=time_axis)
+    if upper is None:
+        upper = jnp.max(loc + 20.0 * scale, axis=time_axis)
+
+    # The residual is monotone decreasing in ``level`` and tends to ``-target``
+    # as ``level -> +inf`` (every block's survival vanishes, including past the
+    # finite Weibull endpoint where ``gev_survival`` saturates to 0). A fixed
+    # ``loc + 20*scale`` underestimates heavy Fréchet tails, so grow the upper
+    # bracket until it actually brackets the root before bisecting.
+    upper = _expand_upper_bracket(residual, lower, upper)
 
     return _bisect_monotone_decreasing(
         residual, lower, upper, num_steps=num_bisection_steps

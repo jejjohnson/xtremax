@@ -16,7 +16,10 @@ from xtremax import (
     assemble_nonstationary_gev_fields,
     design_matrix,
     expected_exceedances,
+    gev_cdf,
+    gev_log_survival,
     gev_return_level,
+    gev_survival,
     nonstationary_return_level,
     nonstationary_return_period,
     pairwise_distances,
@@ -63,6 +66,46 @@ class TestAssembleFields:
         )
         # Each block sums the two covariate contributions: 1*1 + 1*1 = 2.
         assert jnp.allclose(loc, 2.0)
+
+
+class TestSurvival:
+    def test_matches_one_minus_cdf_in_bulk(self):
+        """In the bulk, S(x) and 1 - F(x) agree to high precision."""
+        x = jnp.linspace(-1.0, 4.0, 25)
+        for shape in (-0.2, 0.0, 0.3):
+            s = gev_survival(x, 0.0, 1.0, shape)
+            ref = 1.0 - gev_cdf(x, 0.0, 1.0, shape)
+            assert jnp.allclose(s, ref, atol=1e-5)
+
+    def test_log_survival_consistent(self):
+        x = jnp.linspace(-1.0, 4.0, 25)
+        s = gev_survival(x, 0.0, 1.0, -0.1)
+        log_s = gev_log_survival(x, 0.0, 1.0, -0.1)
+        assert jnp.allclose(jnp.exp(log_s), s, atol=1e-6)
+
+    def test_deep_tail_accuracy_float64(self):
+        """`1 - cdf` cancels to 0 in the deep tail; `gev_survival` does not."""
+        from jax import config
+
+        config.update("jax_enable_x64", True)
+        try:
+            x = jnp.asarray(40.0, dtype=jnp.float64)  # Gumbel, S ~ e^-40 ~ 4e-18
+            s = gev_survival(x, 0.0, 1.0, 0.0)
+            naive = 1.0 - gev_cdf(x, 0.0, 1.0, 0.0)
+            assert float(s) > 0.0
+            assert jnp.allclose(s, jnp.exp(-40.0), rtol=1e-6)
+            # The naive form has lost all precision (rounds to exactly 0).
+            assert float(naive) == 0.0
+        finally:
+            config.update("jax_enable_x64", False)
+
+    def test_out_of_support_boundaries(self):
+        # Fréchet (ξ>0): below lower endpoint S = 1.
+        s_lo = gev_survival(-100.0, 0.0, 1.0, 0.5)
+        assert jnp.allclose(s_lo, 1.0)
+        # Weibull (ξ<0): above upper endpoint μ - σ/ξ = 5.0, S = 0.
+        s_hi = gev_survival(100.0, 0.0, 1.0, -0.2)
+        assert jnp.allclose(s_hi, 0.0)
 
 
 class TestStationaryConsistency:
@@ -115,6 +158,24 @@ class TestNonStationary:
             z[None, :], loc, scale, shape, time_axis=0
         )
         assert jnp.allclose(recovered, period, rtol=1e-3)
+
+    def test_heavy_frechet_tail_brackets_root(self):
+        """Regression: heavy Fréchet tails / large T must not clamp to the
+        initial 20*scale upper bracket.
+
+        With flat fields the non-stationary solve reduces to the closed-form
+        stationary quantile sum_t S(z) = N/T  =>  S(z) = 1/T, so the answer
+        must equal gev_return_level(T, ...). Previously this returned ~20.0.
+        """
+        n_blocks = 30
+        loc = jnp.zeros((n_blocks, 1))
+        scale = jnp.ones((n_blocks, 1))
+        for shape, period in [(0.3, 1000.0), (0.5, 1000.0), (0.5, 10_000.0)]:
+            shape_field = jnp.full((n_blocks, 1), shape)
+            z = nonstationary_return_level(period, loc, scale, shape_field, time_axis=0)
+            ref = gev_return_level(period, 0.0, 1.0, shape)
+            assert z[0] > 20.0  # the old buggy clamp value
+            assert jnp.allclose(z[0], ref, rtol=1e-3)
 
     def test_jit_and_grad_safe(self):
         loc, scale, shape = self._fields()

@@ -97,5 +97,5 @@ def two_range_correlation(
     jittered = base + jitter * jnp.eye(n_sites)
 
     # Renormalize to unit diagonal so the matrix is a valid correlation matrix.
-    diag = jnp.sqrt(jnp.clip(jnp.diag(jittered), a_min=1e-12))
+    diag = jnp.sqrt(jnp.clip(jnp.diag(jittered), min=1e-12))
     return jittered / (diag[:, None] * diag[None, :])

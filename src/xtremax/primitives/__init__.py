@@ -22,8 +22,10 @@ from xtremax.primitives.gev import (
     gev_cdf,
     gev_icdf,
     gev_log_prob,
+    gev_log_survival,
     gev_mean,
     gev_return_level,
+    gev_survival,
 )
 from xtremax.primitives.gpd import (
     gpd_cdf,
@@ -73,8 +75,10 @@ __all__ = [
     "gev_cdf",
     "gev_icdf",
     "gev_log_prob",
+    "gev_log_survival",
     "gev_mean",
     "gev_return_level",
+    "gev_survival",
     # GPD
     "gpd_cdf",
     "gpd_icdf",
