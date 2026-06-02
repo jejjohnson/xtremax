@@ -146,7 +146,8 @@ class TestNonStationary:
         period = 20.0
         z = nonstationary_return_level(period, loc, scale, shape, time_axis=0)
         n_blocks = loc.shape[0]
-        got = expected_exceedances(z[None, :], loc, scale, shape, time_axis=0)
+        # Threshold is shaped like the non-time dims; the block axis is inserted.
+        got = expected_exceedances(z, loc, scale, shape, time_axis=0)
         # By definition sum_t P(Y_t > z) = N_blocks / T.
         assert jnp.allclose(got, n_blocks / period, atol=1e-3)
 
@@ -154,10 +155,27 @@ class TestNonStationary:
         loc, scale, shape = self._fields()
         period = 25.0
         z = nonstationary_return_level(period, loc, scale, shape, time_axis=0)
-        recovered = nonstationary_return_period(
-            z[None, :], loc, scale, shape, time_axis=0
-        )
+        recovered = nonstationary_return_period(z, loc, scale, shape, time_axis=0)
         assert jnp.allclose(recovered, period, rtol=1e-3)
+
+    def test_non_leading_time_axis(self):
+        """time_axis need not be leading: (n_sites, n_blocks) with time_axis=1
+        must match the transposed (n_blocks, n_sites) / time_axis=0 result."""
+        loc0, scale0, shape0 = self._fields()  # (n_blocks, n_sites)
+        loc1, scale1, shape1 = loc0.T, scale0.T, shape0.T  # (n_sites, n_blocks)
+        period = 20.0
+
+        z0 = nonstationary_return_level(period, loc0, scale0, shape0, time_axis=0)
+        z1 = nonstationary_return_level(period, loc1, scale1, shape1, time_axis=1)
+        assert z1.shape == (loc0.shape[1],)
+        assert jnp.allclose(z0, z1, rtol=1e-4)
+
+        # A threshold shaped like the (n_sites,) non-time dims broadcasts along
+        # the trailing block axis without raising.
+        thr = z1  # (n_sites,)
+        count = expected_exceedances(thr, loc1, scale1, shape1, time_axis=1)
+        assert count.shape == (loc0.shape[1],)
+        assert jnp.allclose(count, loc0.shape[0] / period, atol=1e-3)
 
     def test_heavy_frechet_tail_brackets_root(self):
         """Regression: heavy Fréchet tails / large T must not clamp to the

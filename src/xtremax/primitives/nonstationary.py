@@ -122,9 +122,15 @@ def expected_exceedances(
         Either :math:`\Pr(Y > z)` (``time_axis is None``) or
         :math:`\sum_t \Pr(Y_t > z)` (summed over ``time_axis``).
     """
-    survival = gev_survival(threshold, loc, scale, shape)
+    threshold = jnp.asarray(threshold)
     if time_axis is None:
-        return survival
+        return gev_survival(threshold, loc, scale, shape)
+    # Honor the documented contract that ``threshold`` broadcasts against the
+    # non-time dimensions for *any* ``time_axis`` (not just a leading one) by
+    # inserting the block axis. A scalar already broadcasts everywhere.
+    if threshold.ndim > 0:
+        threshold = jnp.expand_dims(threshold, time_axis)
+    survival = gev_survival(threshold, loc, scale, shape)
     return jnp.sum(survival, axis=time_axis)
 
 
@@ -198,10 +204,11 @@ def _expand_upper_bracket(
 
     Doubles the gap ``upper - lower`` until the residual is non-positive at the
     upper end (or the expansion cap is hit), guaranteeing a valid bracket for
-    :func:`_bisect_monotone_decreasing`. Because ``fn`` is monotone decreasing,
-    over-expanding sites that already satisfy ``fn(upper) <= 0`` keeps them
-    valid, so a single ``jnp.any`` stop condition is safe. Uses
-    ``jax.lax.while_loop`` to stay ``jax.jit`` safe.
+    :func:`_bisect_monotone_decreasing`. Only the elements that still need it
+    are grown each step, so one heavy-tailed site does not inflate the bracket
+    of already-bracketed sites (which would waste the fixed bisection budget on
+    a needlessly wide interval). Uses ``jax.lax.while_loop`` to stay
+    ``jax.jit`` safe.
     """
     lower, upper = jnp.broadcast_arrays(jnp.asarray(lower), jnp.asarray(upper))
 
@@ -211,7 +218,9 @@ def _expand_upper_bracket(
 
     def body(state):
         up, i = state
-        return lower + 2.0 * (up - lower), i + 1
+        needs_growth = fn(up) > 0
+        grown = lower + 2.0 * (up - lower)
+        return jnp.where(needs_growth, grown, up), i + 1
 
     upper, _ = jax.lax.while_loop(cond, body, (upper, 0))
     return upper
