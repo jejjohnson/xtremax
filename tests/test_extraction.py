@@ -17,6 +17,8 @@ from xtremax.extraction import (
     r_largest_block_maxima,
     rolling_threshold,
     seasonal_threshold,
+    sliding_block_maxima,
+    spatial_block_maxima,
     temporal_block_maxima,
     temporal_threshold,
 )
@@ -412,3 +414,82 @@ class TestQuantileRegression:
     def test_threshold_function(self, daily_series):
         u = quantile_regression_threshold(daily_series, quantile=0.95, time_dim="time")
         assert u.shape == daily_series.shape
+
+
+class TestKeepOriginalCoordinates:
+    """The keep_time / keep_coords option records where each extreme occurred."""
+
+    def test_temporal_keep_time(self):
+        time = pd.date_range("2020-01-01", periods=730, freq="D")
+        values = np.zeros(730)
+        values[100] = 40.0  # 2020 max
+        values[565] = 42.0  # 2021 max
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+        am = temporal_block_maxima(da, "YE", keep_time=True)
+        assert "time_of_max" in am.coords
+        got = pd.to_datetime(np.asarray(am["time_of_max"].values).ravel())
+        assert got[0] == time[100]
+        assert got[1] == time[565]
+        # default keeps the old behaviour (no extra coordinate)
+        assert "time_of_max" not in temporal_block_maxima(da, "YE").coords
+
+    def test_temporal_keep_time_empty_block_is_nat(self):
+        time = pd.date_range("2020-01-01", periods=400, freq="D")
+        values = np.full(400, np.nan)
+        values[10] = 30.0  # only 2020 has data
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+        am = temporal_block_maxima(da, "YE", keep_time=True)
+        tom = np.asarray(am["time_of_max"].values).ravel()
+        assert pd.Timestamp(tom[0]) == time[10]
+        assert pd.isnull(tom[1])  # 2021 block has no data -> NaT
+
+    def test_sliding_keep_time(self):
+        time = pd.date_range("2020-01-01", periods=10, freq="D")
+        values = np.array([1, 5, 2, 9, 1, 1, 7, 2, 8, 3.0])
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+        sm = sliding_block_maxima(da, 3, keep_time=True, min_periods=1)
+        tom = pd.to_datetime(np.asarray(sm["time_of_max"].values))
+        assert tom[5] == time[3]  # window [3,4,5] max 9 sits at index 3
+
+    def test_spatial_keep_coords(self):
+        arr = np.arange(16).reshape(4, 4).astype(float)
+        da = xr.DataArray(
+            arr,
+            dims=["y", "x"],
+            coords={"y": np.arange(4) * 10.0, "x": np.arange(4) * 100.0},
+        )
+        sm = spatial_block_maxima(da, {"y": 2, "x": 2}, keep_coords=True)
+        sm = sm.transpose("y", "x")
+        assert float(sm["y_of_max"].values[0, 0]) == 10.0
+        assert float(sm["x_of_max"].values[0, 0]) == 100.0
+        assert float(sm["x_of_max"].values[0, 1]) == 300.0
+
+    def test_r_largest_keep_time_resample(self):
+        time = pd.date_range("2020-01-01", periods=6, freq="D")
+        values = np.array([3, 1, 9, 2, 7, 5.0])
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+        rl = r_largest_block_maxima(da, "YE", r=3, keep_time=True)
+        assert "time_of_max" in rl.coords
+        tom = pd.to_datetime(np.asarray(rl["time_of_max"].values).ravel())
+        assert tom[0] == time[2]  # largest (9) at index 2
+        assert tom[1] == time[4]  # second (7) at index 4
+
+    def test_r_largest_keep_time_fixed_blocks(self):
+        time = pd.date_range("2020-01-01", periods=6, freq="D")
+        values = np.array([3, 1, 9, 2, 7, 5.0])
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+        rl = r_largest_block_maxima(da, 3, r=2, keep_time=True)
+        tom = np.asarray(rl["time_of_max"].transpose("block", "order").values)
+        assert pd.Timestamp(tom[0, 0]) == time[2]  # block 0 largest (9)
+        assert pd.Timestamp(tom[1, 0]) == time[4]  # block 1 largest (7)
+
+    def test_declustered_runs_keep_time(self):
+        time = pd.date_range("2020-01-01", periods=9, freq="D")
+        values = np.array([1, 2, 9, 7, 8, 1, 1, 6, 1.0])
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+        dc = declustered_block_maxima(
+            da, threshold=5, min_separation=1, method="runs", keep_time=True
+        )
+        peaks = set(pd.to_datetime(np.asarray(dc["time_of_max"].values).ravel()))
+        assert time[2] in peaks  # run [9,7,8] max at index 2
+        assert time[7] in peaks  # isolated 6 at index 7

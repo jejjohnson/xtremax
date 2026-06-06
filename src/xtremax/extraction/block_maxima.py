@@ -7,7 +7,11 @@ import xarray as xr
 
 
 def temporal_block_maxima(
-    da: xr.DataArray, freq: str, time_dim: str = "time", min_periods: int | None = None
+    da: xr.DataArray,
+    freq: str,
+    time_dim: str = "time",
+    min_periods: int | None = None,
+    keep_time: bool = False,
 ) -> xr.DataArray:
     """
     Extract temporal block maximum values from an xarray DataArray.
@@ -26,11 +30,18 @@ def temporal_block_maxima(
     min_periods : int, optional
         Minimum number of observations required for a valid maximum.
         If None, all blocks are used regardless of missing data.
+    keep_time : bool, default False
+        If True, attach a ``f"{time_dim}_of_max"`` coordinate holding the
+        **original timestamp** at which each block maximum occurred (rather than
+        only the resampled block label). Empty or ``min_periods``-masked blocks
+        get ``NaT``. Useful for plotting the maxima at the moment they actually
+        happened instead of at the block boundary.
 
     Returns
     -------
     xr.DataArray
-        Temporal block maximum values
+        Temporal block maximum values. When ``keep_time=True`` the result also
+        carries a ``f"{time_dim}_of_max"`` coordinate with the argmax timestamps.
 
     Examples
     --------
@@ -40,20 +51,32 @@ def temporal_block_maxima(
     >>> # Monthly maxima with at least 20 observations per month
     >>> monthly_max = temporal_block_maxima(da, '1M', min_periods=20)
 
-    >>> # Seasonal maxima (3-month blocks)
-    >>> seasonal_max = temporal_block_maxima(da, '3M')
+    >>> # Annual maxima labelled with the day each maximum occurred
+    >>> am = temporal_block_maxima(da, 'YE', keep_time=True)
+    >>> am['time_of_max']  # actual timestamps, NaT for empty blocks
     """
     resampler = da.resample({time_dim: freq})
 
+    maxima = resampler.max(dim=time_dim, keep_attrs=True)
     if min_periods is not None:
-        # Count valid observations in each block
+        # Mask blocks with insufficient data.
         counts = resampler.count(dim=time_dim)
-        maxima = resampler.max(dim=time_dim, keep_attrs=True)
-        # Mask blocks with insufficient data
         maxima = maxima.where(counts >= min_periods)
-        return maxima
-    else:
-        return resampler.max(dim=time_dim, keep_attrs=True)
+
+    if keep_time:
+
+        def _arg_time(block: xr.DataArray) -> xr.DataArray:
+            # Timestamp of the max within the block; NaT where the block is
+            # all-NaN (fill with -inf so idxmax is well-defined, then re-mask).
+            has_data = block.notnull().any(time_dim)
+            return block.fillna(-np.inf).idxmax(time_dim).where(has_data)
+
+        arg_time = da.resample({time_dim: freq}).map(_arg_time)
+        # Align NaT with the maxima's own NaNs (e.g. min_periods masking).
+        arg_time = arg_time.where(maxima.notnull())
+        maxima = maxima.assign_coords({f"{time_dim}_of_max": arg_time})
+
+    return maxima
 
 
 def spatial_block_maxima(
@@ -62,6 +85,7 @@ def spatial_block_maxima(
     dims: Hashable | Sequence[Hashable] = None,
     min_periods: int | None = None,
     boundary: str = "trim",
+    keep_coords: bool = False,
 ) -> xr.DataArray:
     """
     Extract spatial block maximum values from an xarray DataArray.
@@ -83,24 +107,27 @@ def spatial_block_maxima(
         If None, computes maximum even with missing data.
     boundary : str, default 'trim'
         How to handle boundaries. Options: 'trim', 'pad', 'exact'
+    keep_coords : bool, default False
+        If True, attach a ``f"{dim}_of_max"`` coordinate for each coarsened
+        ``dim`` holding the **original coordinate** at which each block maximum
+        occurred (i.e. *where* in the block the extreme is), rather than only the
+        coarsened block label. Empty / masked blocks get NaN.
 
     Returns
     -------
     xr.DataArray
-        Spatial block maximum values with reduced resolution
+        Spatial block maximum values with reduced resolution. When
+        ``keep_coords=True`` the result also carries a ``f"{dim}_of_max"``
+        coordinate per coarsened ``dim`` with the argmax locations.
 
     Examples
     --------
     >>> # 10x10 spatial blocks
     >>> spatial_max = spatial_block_maxima(da, {'x': 10, 'y': 10})
 
-    >>> # 5x5 blocks along lat/lon dimensions
-    >>> spatial_max = spatial_block_maxima(da, 5, dims=['lat', 'lon'])
-
-    >>> # Require at least 50 valid points per block
-    >>> spatial_max = spatial_block_maxima(
-    ...     da, {'x': 10, 'y': 10}, min_periods=50
-    ... )
+    >>> # 5x5 blocks, keeping the (lat, lon) of each block's maximum
+    >>> sm = spatial_block_maxima(da, 5, dims=['lat', 'lon'], keep_coords=True)
+    >>> sm['lat_of_max'], sm['lon_of_max']
     """
     # Handle block_size specification
     if isinstance(block_size, dict):
@@ -115,15 +142,34 @@ def spatial_block_maxima(
     # Create coarsen object
     coarsened = da.coarsen(dim=coarsen_kwargs, boundary=boundary)
 
+    maxima = coarsened.max(keep_attrs=True)
     if min_periods is not None:
-        # Count valid observations in each block
         counts = coarsened.count()
-        maxima = coarsened.max(keep_attrs=True)
-        # Mask blocks with insufficient data
         maxima = maxima.where(counts >= min_periods)
-        return maxima
-    else:
-        return coarsened.max(keep_attrs=True)
+
+    if keep_coords:
+        cdims = list(coarsen_kwargs)
+        win = {d: f"_{d}_win" for d in cdims}
+        # Split each coarsened dim into (block, within-block) and find the
+        # argmax over the flattened within-block window.
+        con = coarsened.construct({d: (d, win[d]) for d in cdims})
+        stacked = con.stack(_bw=tuple(win[d] for d in cdims))
+        has_data = stacked.notnull().any("_bw")
+        flat = stacked.fillna(-np.inf).argmax("_bw")
+        # Build each coordinate's within-block grid, broadcast over every window
+        # dim, stack to match ``flat`` and select — robust to any number of dims.
+        coord_windows = [
+            xr.DataArray(da[d].values, dims=[d])
+            .coarsen({d: coarsen_kwargs[d]}, boundary=boundary)
+            .construct({d: (d, win[d])})
+            for d in cdims
+        ]
+        for d, cwin in zip(cdims, xr.broadcast(*coord_windows), strict=True):
+            cstacked = cwin.stack(_bw=tuple(win[dd] for dd in cdims))
+            d_of_max = cstacked.isel(_bw=flat).where(has_data)
+            maxima = maxima.assign_coords({f"{d}_of_max": d_of_max})
+
+    return maxima
 
 
 def sliding_block_maxima(
@@ -133,6 +179,7 @@ def sliding_block_maxima(
     stride: int = 1,
     min_periods: int | None = None,
     center: bool = False,
+    keep_time: bool = False,
 ) -> xr.DataArray:
     """
     Extract block maxima using a sliding window approach.
@@ -158,22 +205,25 @@ def sliding_block_maxima(
         If None, defaults to window_size.
     center : bool, default False
         If True, set the window labels at the center of the window
+    keep_time : bool, default False
+        If True, attach a ``f"{dim}_of_max"`` coordinate holding the **original
+        coordinate** at which each window's maximum occurred (which can differ
+        from the window's own label). Windows with no valid data get NaN/NaT.
 
     Returns
     -------
     xr.DataArray
-        Sliding block maximum values
+        Sliding block maximum values. When ``keep_time=True`` the result also
+        carries a ``f"{dim}_of_max"`` coordinate with the argmax coordinates.
 
     Examples
     --------
     >>> # 365-day sliding window with daily stride
     >>> sliding_max = sliding_block_maxima(da, window_size=365, stride=1)
 
-    >>> # Non-overlapping 30-day blocks (equivalent to fixed blocks)
-    >>> block_max = sliding_block_maxima(da, window_size=30, stride=30)
-
-    >>> # 90-day window with 7-day stride (weekly updates)
-    >>> weekly_max = sliding_block_maxima(da, window_size=90, stride=7)
+    >>> # Track the day each window maximum actually occurred
+    >>> sm = sliding_block_maxima(da, window_size=30, keep_time=True)
+    >>> sm['time_of_max']
     """
     if min_periods is None:
         min_periods = window_size
@@ -181,6 +231,18 @@ def sliding_block_maxima(
     # Use rolling window
     rolling = da.rolling({dim: window_size}, center=center, min_periods=min_periods)
     maxima = rolling.max()
+
+    if keep_time:
+        windows = rolling.construct("_w")
+        coord_windows = (
+            xr.DataArray(da[dim].values, dims=[dim], coords={dim: da[dim]})
+            .rolling({dim: window_size}, center=center)
+            .construct("_w")
+        )
+        has_data = windows.notnull().any("_w")
+        offset = windows.fillna(-np.inf).argmax("_w")
+        arg_coord = coord_windows.isel(_w=offset).where(has_data)
+        maxima = maxima.assign_coords({f"{dim}_of_max": arg_coord})
 
     # Apply stride by subsampling
     if stride > 1:
@@ -195,6 +257,7 @@ def declustered_block_maxima(
     min_separation: int,
     dim: str = "time",
     method: str = "runs",
+    keep_time: bool = False,
 ) -> xr.DataArray:
     """
     Extract declustered block maxima by identifying independent extreme events.
@@ -217,22 +280,23 @@ def declustered_block_maxima(
         Declustering method:
         - 'runs': Select maximum from each exceedance run
         - 'separation': Enforce minimum time separation between peaks
+    keep_time : bool, default False
+        If True, attach a ``f"{dim}_of_max"`` coordinate holding the **original
+        timestamp** at which each cluster's maximum occurred. The ``'runs'``
+        method otherwise labels the representative at the *end* of its run, so
+        this recovers the true peak time; for ``'separation'`` the peaks already
+        sit at their original positions.
 
     Returns
     -------
     xr.DataArray
-        Declustered block maxima with reduced temporal dependence
+        Declustered block maxima with reduced temporal dependence.
 
     Examples
     --------
     >>> # Extract independent storm maxima (3-day separation)
     >>> storm_max = declustered_block_maxima(
     ...     da, threshold=100, min_separation=3, method='runs'
-    ... )
-
-    >>> # Heat wave maxima with 7-day separation
-    >>> heatwave_max = declustered_block_maxima(
-    ...     da, threshold=35, min_separation=7, method='separation'
     ... )
 
     Notes
@@ -247,17 +311,72 @@ def declustered_block_maxima(
         # Delegate so run IDs are computed per non-`dim` slice and cannot
         # collide across batch rows (e.g. different sites).
         reduced = decluster_runs(da, threshold=threshold, dim=dim, reduction="max")
+        if keep_time:
+            reduced = _attach_runs_argtime(reduced, da, threshold, dim)
         return reduced.dropna(dim, how="all")
 
     elif method == "separation":
         # Delegate to the separation-based declustering helper, which
         # actually applies `min_separation` in units of original time steps.
-        return decluster_separation(
+        peaks = decluster_separation(
             da, threshold=threshold, min_separation=min_separation, dim=dim
         )
+        if keep_time:
+            # Separation keeps peaks at their own positions, so the maximum's
+            # coordinate is the position itself.
+            arg = xr.full_like(peaks, np.nan, dtype=da[dim].dtype)
+            arg = arg.where(peaks.isnull(), peaks[dim])
+            peaks = peaks.assign_coords({f"{dim}_of_max": arg})
+        return peaks
 
     else:
         raise ValueError(f"Unknown method: {method}. Use 'runs' or 'separation'")
+
+
+def _attach_runs_argtime(
+    reduced: xr.DataArray, da: xr.DataArray, threshold, dim: str
+) -> xr.DataArray:
+    """Attach a ``f"{dim}_of_max"`` coord giving the true peak time per run.
+
+    ``decluster_runs`` stores each run's max at the *last* index of the run; this
+    recovers the index of the actual maximum within each run and maps it to the
+    original coordinate, aligned to ``reduced`` (NaT where there is no run rep).
+    """
+    exceedances = da > threshold
+    coords = np.asarray(da[dim].values)
+
+    def _runs_argpos_1d(values: np.ndarray, exc: np.ndarray) -> np.ndarray:
+        n = values.shape[0]
+        out = np.full(n, -1, dtype=np.int64)
+        if not exc.any():
+            return out
+        in_run, start = False, 0
+        for i in range(n):
+            if exc[i] and not in_run:
+                start, in_run = i, True
+            elif not exc[i] and in_run:
+                out[i - 1] = start + int(np.nanargmax(values[start:i]))
+                in_run = False
+        if in_run:
+            out[n - 1] = start + int(np.nanargmax(values[start:n]))
+        return out
+
+    argpos = xr.apply_ufunc(
+        _runs_argpos_1d,
+        da,
+        exceedances,
+        input_core_dims=[[dim], [dim]],
+        output_core_dims=[[dim]],
+        vectorize=True,
+        output_dtypes=[np.int64],
+    )
+    arg_time = xr.where(
+        argpos >= 0,
+        xr.DataArray(coords[np.clip(argpos.values, 0, None)], dims=argpos.dims),
+        np.datetime64("NaT") if coords.dtype.kind == "M" else np.nan,
+    )
+    arg_time = arg_time.where(reduced.notnull())
+    return reduced.assign_coords({f"{dim}_of_max": arg_time})
 
 
 def r_largest_block_maxima(
@@ -266,6 +385,7 @@ def r_largest_block_maxima(
     r: int = 3,
     dim: str = "time",
     min_periods: int | None = None,
+    keep_time: bool = False,
 ) -> xr.DataArray:
     """
     Extract r-largest order statistics from each block.
@@ -286,34 +406,30 @@ def r_largest_block_maxima(
         Dimension along which to compute order statistics
     min_periods : int, optional
         Minimum number of observations required in a block
+    keep_time : bool, default False
+        If True, attach a ``f"{dim}_of_max"`` coordinate (with the same
+        ``order`` axis) holding the **original coordinate** at which each of the
+        r largest values occurred. Missing slots get NaN/NaT.
 
     Returns
     -------
     xr.DataArray
-        Array with r-largest values from each block, with new dimension 'order'
+        Array with r-largest values from each block, with new dimension 'order'.
+        When ``keep_time=True`` it also carries a ``f"{dim}_of_max"`` coordinate
+        over ``(..., order)`` with the timestamps of those r values.
 
     Examples
     --------
     >>> # 3 largest values from each year
     >>> annual_r_largest = r_largest_block_maxima(da, '1Y', r=3)
 
-    >>> # Top 5 values from 100-element blocks
-    >>> block_r_largest = r_largest_block_maxima(da, 100, r=5)
-
-    Notes
-    -----
-    The r-largest order statistics model is useful when you want to use
-    more information than just the block maximum for fitting extreme
-    value distributions.
+    >>> # ... and the day each of the 3 largest occurred
+    >>> rl = r_largest_block_maxima(da, 'YE', r=3, keep_time=True)
+    >>> rl['time_of_max']
     """
 
     def _top_r_1d(values: np.ndarray) -> np.ndarray:
-        """Top-r descending from a 1-D array, NaN-padded to length r.
-
-        Operating per 1-D slice is what keeps non-``dim`` axes independent
-        — flattening a multi-dim block pools every non-``dim`` axis into
-        one sample and corrupts per-site r-largest extraction.
-        """
+        """Top-r descending from a 1-D array, NaN-padded to length r."""
         clean = values[~np.isnan(values)]
         out = np.full(r, np.nan, dtype=float)
         if min_periods is not None and clean.size < min_periods:
@@ -325,55 +441,75 @@ def r_largest_block_maxima(
         out[:k] = sorted_asc[-k:][::-1]
         return out
 
+    def _top_r_pos_1d(values: np.ndarray) -> np.ndarray:
+        """Original indices of the r largest (descending), -1-padded to r."""
+        valid = np.flatnonzero(~np.isnan(values))
+        out = np.full(r, -1, dtype=np.int64)
+        if min_periods is not None and valid.size < min_periods:
+            return out
+        if valid.size == 0:
+            return out
+        order = valid[np.argsort(values[valid])][::-1]
+        k = min(order.size, r)
+        out[:k] = order[:k]
+        return out
+
+    def _apply(values: xr.DataArray, func, out_dtype) -> xr.DataArray:
+        return xr.apply_ufunc(
+            func,
+            values,
+            input_core_dims=[[dim]],
+            output_core_dims=[["order"]],
+            vectorize=True,
+            output_dtypes=[out_dtype],
+            dask_gufunc_kwargs={"output_sizes": {"order": r}},
+        )
+
+    def _coord_from_pos(pos: xr.DataArray, coords: np.ndarray) -> xr.DataArray:
+        # .where fills unselected slots with NaN (NaT for datetime coords).
+        picked = coords[np.clip(pos.values, 0, None)]
+        out = xr.DataArray(picked, dims=pos.dims, coords=pos.coords)
+        return out.where(pos >= 0)
+
     if isinstance(block_size, str):
-        # Time-based resampling; delegate to apply_ufunc over `dim` so
-        # non-``dim`` axes are processed independently per group.
+        # Time-based resampling; process each block as a 1-D slice.
         groups = da.resample({dim: block_size})
-
-        def _group_top_r(group: xr.DataArray) -> xr.DataArray:
-            return xr.apply_ufunc(
-                _top_r_1d,
-                group,
-                input_core_dims=[[dim]],
-                output_core_dims=[["order"]],
-                vectorize=True,
-                output_dtypes=[float],
-                dask_gufunc_kwargs={"output_sizes": {"order": r}},
-            )
-
-        result = groups.map(_group_top_r)
+        result = groups.map(lambda g: _apply(g, _top_r_1d, float))
         result = result.assign_coords(order=np.arange(1, r + 1))
         result.attrs = da.attrs
+        if keep_time:
+            # The block index of each top-r value, mapped to original coords
+            # per block (positions are within-block, so resolve per group).
+            def _group_times(g: xr.DataArray) -> xr.DataArray:
+                pos = _apply(g, _top_r_pos_1d, np.int64)
+                return _coord_from_pos(pos, np.asarray(g[dim].values))
+
+            times = groups.map(_group_times)
+            result = result.assign_coords({f"{dim}_of_max": times})
         return result
     else:
-        # Fixed-size blocks. Label each position along `dim` with its
-        # block id and groupby; for each block, run the 1-D selector per
-        # non-``dim`` slice via apply_ufunc. This preserves the multi-dim
-        # structure instead of flattening every non-``dim`` axis into
-        # the block-wise top-r pool.
+        # Fixed-size blocks.
         n_blocks = da.sizes[dim] // block_size
         trimmed_length = n_blocks * block_size
         trimmed = da.isel({dim: slice(0, trimmed_length)})
-
         block_ids = np.arange(trimmed_length) // block_size
         trimmed = trimmed.assign_coords(_block=(dim, block_ids))
 
-        def _per_block_top_r(group: xr.DataArray) -> xr.DataArray:
-            return xr.apply_ufunc(
-                _top_r_1d,
-                group,
-                input_core_dims=[[dim]],
-                output_core_dims=[["order"]],
-                vectorize=True,
-                output_dtypes=[float],
-                dask_gufunc_kwargs={"output_sizes": {"order": r}},
-            )
-
-        result = trimmed.groupby("_block").map(_per_block_top_r)
+        result = trimmed.groupby("_block").map(lambda g: _apply(g, _top_r_1d, float))
         block_coords = da[dim].values[:trimmed_length:block_size]
         result = result.rename({"_block": "block"}).assign_coords(
-            block=block_coords,
-            order=np.arange(1, r + 1),
+            block=block_coords, order=np.arange(1, r + 1)
         )
         result.attrs = da.attrs
+        if keep_time:
+
+            def _block_times(g: xr.DataArray) -> xr.DataArray:
+                pos = _apply(g, _top_r_pos_1d, np.int64)
+                return _coord_from_pos(pos, np.asarray(g[dim].values))
+
+            times = trimmed.groupby("_block").map(_block_times)
+            times = times.rename({"_block": "block"}).assign_coords(
+                block=block_coords, order=np.arange(1, r + 1)
+            )
+            result = result.assign_coords({f"{dim}_of_max": times})
         return result
