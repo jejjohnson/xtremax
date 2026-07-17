@@ -292,6 +292,20 @@ class TestClassPrimitiveParity:
         x = jnp.linspace(-3.0, 2.0, 20)
         assert jnp.allclose(d.log_prob(x), weibull_log_prob(x, 0.0, 1.0, -0.2))
 
+    def test_gevd_survival_delegates_to_primitive(self, x):
+        """Class survival / log-survival must match the stable primitives (incl.
+        the small-ξ band), not the old threshold-based branches."""
+        from xtremax import GeneralizedExtremeValueDistribution
+
+        for xi in (0.2, 5e-8, -0.2):
+            d = GeneralizedExtremeValueDistribution(0.0, 1.0, xi)
+            assert jnp.allclose(d.survival_function(x), gev_survival(x, 0.0, 1.0, xi))
+            assert jnp.allclose(
+                d.log_survival_function(x),
+                gev_log_survival(x, 0.0, 1.0, xi),
+                equal_nan=True,
+            )
+
 
 class TestGEVOracle:
     """Compare GEV primitives against scipy.stats.genextreme (c = -ξ).
@@ -534,3 +548,30 @@ class TestExtendedRealLimits:
         for argnums in (1, 2):  # scale, shape
             g = jax.grad(fn, argnums=argnums)(jnp.asarray(self.INF), 1.0, 0.2)
             assert jnp.isfinite(g)
+
+    @pytest.mark.parametrize(
+        "fn", [gev_log_prob, gev_cdf, gev_survival, gev_log_survival]
+    )
+    @pytest.mark.parametrize("z", [-100.0, -500.0])
+    def test_gumbel_deep_tail_grad_finite(self, fn, z):
+        """The Gumbel (ξ=0) deep lower tail drives exp(-w) past the float32
+        overflow, which used to give a NaN parameter gradient."""
+        g = jax.grad(lambda s: fn(z, 0.0, s, 0.0))(1.0)
+        assert jnp.isfinite(g)
+
+    @pytest.mark.parametrize(
+        "fn, args",
+        [
+            (gev_cdf, (0.0, 1.0, 0.0)),
+            (gev_survival, (0.0, 1.0, 0.2)),
+            (gev_log_prob, (0.0, 1.0, -0.2)),
+            (gev_log_survival, (0.0, 1.0, 0.0)),
+            (gpd_cdf, (1.0, 0.2)),
+            (gpd_survival, (1.0, 0.0)),
+            (gpd_log_prob, (1.0, -0.2)),
+            (gpd_log_survival, (1.0, 0.2)),
+        ],
+    )
+    def test_nan_input_propagates(self, fn, args):
+        """A NaN observation must stay NaN, not be read as a support boundary."""
+        assert jnp.isnan(fn(jnp.asarray(float("nan")), *args))

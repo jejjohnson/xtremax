@@ -27,6 +27,22 @@ EULER_GAMMA = 0.5772156649015329
 # float64 eps at the crossover while staying comfortably accurate in float32.
 _SERIES_THRESHOLD = 1e-3
 
+# Clip the argument of ``exp`` below the float32 overflow threshold (~88.7). By
+# ``exp(80)`` the GEV/GPD tails have already saturated (cdf 0/1) in both float32
+# and float64, so clipping changes no observable value but keeps the deep-tail
+# gradient finite instead of forming ``0 · inf = NaN``.
+_EXP_ARG_MAX = 80.0
+
+
+def safe_exp_neg(w: Float[Array, ...]) -> Array:
+    r"""``exp(-w)`` with ``-w`` clipped below the overflow threshold.
+
+    Used wherever the deep lower tail drives ``w \to -\infty`` (e.g. the Gumbel
+    ``ξ = 0`` limit at very negative ``z``): the value is unchanged (the result
+    has already saturated) but the reverse-mode gradient stays finite.
+    """
+    return jnp.exp(-jnp.maximum(w, -_EXP_ARG_MAX))
+
 
 def log1p_over_x(u: Float[Array, ...]) -> Float[Array, ...]:
     r"""Stable :math:`\log(1 + u) / u`, with the removable singularity at 0.

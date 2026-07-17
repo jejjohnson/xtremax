@@ -28,6 +28,7 @@ from xtremax.primitives._common import (
     EULER_GAMMA,
     expm1_over_x,
     log1p_over_x,
+    safe_exp_neg,
 )
 
 
@@ -90,10 +91,11 @@ def gev_log_prob(
 
     w = _reduced_exponent(z, u_safe, valid)
     log_t = jnp.log1p(u_safe)
-    log_pdf = -jnp.log(scale) - (w + log_t) - jnp.exp(-w)
+    log_pdf = -jnp.log(scale) - (w + log_t) - safe_exp_neg(w)
 
-    # Density vanishes at x = ±inf.
-    return jnp.where(jnp.isfinite(x) & valid, log_pdf, -jnp.inf)
+    # Density vanishes at x = ±inf; NaN input propagates.
+    result = jnp.where(jnp.isfinite(x) & valid, log_pdf, -jnp.inf)
+    return jnp.where(jnp.isnan(x), jnp.nan, result)
 
 
 def gev_cdf(
@@ -109,13 +111,14 @@ def gev_cdf(
     valid, u_safe = _support(shape, z)
 
     w = _reduced_exponent(z, u_safe, valid)
-    cdf_inside = jnp.exp(-jnp.exp(-w))
+    cdf_inside = jnp.exp(-safe_exp_neg(w))
     # Fréchet tails (ξ > 0) map out-of-support to 0; Weibull tails to 1.
     boundary = jnp.where(shape > 0, 0.0, 1.0)
     cdf = jnp.where(valid, cdf_inside, boundary)
 
-    # Extended-real limits F(-inf) = 0, F(+inf) = 1.
-    return jnp.where(jnp.isinf(x), jnp.where(x > 0, 1.0, 0.0), cdf)
+    # Extended-real limits F(-inf) = 0, F(+inf) = 1; NaN input propagates.
+    cdf = jnp.where(jnp.isinf(x), jnp.where(x > 0, 1.0, 0.0), cdf)
+    return jnp.where(jnp.isnan(x), jnp.nan, cdf)
 
 
 def gev_survival(
@@ -136,14 +139,15 @@ def gev_survival(
     valid, u_safe = _support(shape, z)
 
     w = _reduced_exponent(z, u_safe, valid)
-    s_inside = -jnp.expm1(-jnp.exp(-w))
+    s_inside = -jnp.expm1(-safe_exp_neg(w))
     # Below the Fréchet (ξ > 0) lower endpoint S = 1; above the Weibull
     # (ξ < 0) upper endpoint S = 0.
     boundary = jnp.where(shape > 0, 1.0, 0.0)
     s = jnp.where(valid, s_inside, boundary)
 
-    # Extended-real limits S(-inf) = 1, S(+inf) = 0.
-    return jnp.where(jnp.isinf(x), jnp.where(x > 0, 0.0, 1.0), s)
+    # Extended-real limits S(-inf) = 1, S(+inf) = 0; NaN input propagates.
+    s = jnp.where(jnp.isinf(x), jnp.where(x > 0, 0.0, 1.0), s)
+    return jnp.where(jnp.isnan(x), jnp.nan, s)
 
 
 def gev_log_survival(
@@ -159,12 +163,13 @@ def gev_log_survival(
     valid, u_safe = _support(shape, z)
 
     w = _reduced_exponent(z, u_safe, valid)
-    ls_inside = jnp.log(-jnp.expm1(-jnp.exp(-w)))
+    ls_inside = jnp.log(-jnp.expm1(-safe_exp_neg(w)))
     boundary = jnp.where(shape > 0, 0.0, -jnp.inf)
     ls = jnp.where(valid, ls_inside, boundary)
 
-    # Extended-real limits log S(-inf) = 0, log S(+inf) = -inf.
-    return jnp.where(jnp.isinf(x), jnp.where(x > 0, -jnp.inf, 0.0), ls)
+    # Extended-real limits log S(-inf) = 0, log S(+inf) = -inf; NaN propagates.
+    ls = jnp.where(jnp.isinf(x), jnp.where(x > 0, -jnp.inf, 0.0), ls)
+    return jnp.where(jnp.isnan(x), jnp.nan, ls)
 
 
 def _gev_icdf_from_neg_log_q(

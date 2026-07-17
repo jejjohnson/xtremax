@@ -69,9 +69,10 @@ def gpd_log_prob(
     # -log σ - (1/ξ + 1) log(1 + ξx/σ) = -log σ - (w + log_t); → -log σ - x/σ.
     log_pdf = -jnp.log(scale) - (w + log_t)
 
-    # Density vanishes at x = ±inf.
+    # Density vanishes at x = ±inf; NaN input propagates.
     in_support = (x >= 0.0) & valid & finite
-    return jnp.where(in_support, log_pdf, -jnp.inf)
+    result = jnp.where(in_support, log_pdf, -jnp.inf)
+    return jnp.where(jnp.isnan(x), jnp.nan, result)
 
 
 def gpd_cdf(
@@ -100,7 +101,8 @@ def gpd_cdf(
     cdf = jnp.where(valid, cdf_inside, boundary)
     cdf = jnp.where(posinf, 1.0, cdf)  # F(+inf) = 1
     # Clamp the universal lower bound (x < 0, incl. -inf, is out of support).
-    return jnp.where(below, 0.0, cdf)
+    cdf = jnp.where(below, 0.0, cdf)
+    return jnp.where(jnp.isnan(x), jnp.nan, cdf)  # NaN input propagates
 
 
 def gpd_survival(
@@ -127,7 +129,8 @@ def gpd_survival(
     s = jnp.where(valid, s_inside, 0.0)
     s = jnp.where(posinf, 0.0, s)  # S(+inf) = 0
     # Below x = 0 (incl. -inf) the exceedance is certain, S = 1.
-    return jnp.where(below, 1.0, s)
+    s = jnp.where(below, 1.0, s)
+    return jnp.where(jnp.isnan(x), jnp.nan, s)  # NaN input propagates
 
 
 def gpd_log_survival(
@@ -150,7 +153,8 @@ def gpd_log_survival(
     w = _reduced_exponent(x_calc, scale, v_safe, valid)
     ls = jnp.where(valid, -w, -jnp.inf)
     ls = jnp.where(posinf, -jnp.inf, ls)  # log S(+inf) = -inf
-    return jnp.where(below, 0.0, ls)
+    ls = jnp.where(below, 0.0, ls)
+    return jnp.where(jnp.isnan(x), jnp.nan, ls)  # NaN input propagates
 
 
 def _gpd_icdf_from_log_exceedance(
