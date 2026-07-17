@@ -26,6 +26,7 @@ from jaxtyping import Array, Float
 
 from xtremax.primitives._common import (
     EULER_GAMMA,
+    clamped_standardize,
     expm1_over_x,
     log1p_over_x,
     safe_exp_neg,
@@ -67,16 +68,6 @@ def _support(shape: Float[Array, ...], z: Float[Array, ...]) -> tuple[Array, Arr
     return valid, jnp.where(valid, u, 0.0)
 
 
-def _finite_z(x: Array, loc: Float[Array, ...], scale: Float[Array, ...]) -> Array:
-    r"""``(x - loc)/scale`` with ``±inf`` inputs mapped to the in-support ``z=0``.
-
-    Keeping ``z`` finite means an ``x = ±inf`` input never forms a
-    parameter-dependent ``±inf`` (whose ``0·inf`` gradient would be NaN); the
-    public functions overwrite those positions with the analytic limit.
-    """
-    return (jnp.where(jnp.isinf(x), loc, x) - loc) / scale
-
-
 def gev_log_prob(
     x: Float[Array, ...],
     loc: Float[Array, ...],
@@ -86,7 +77,7 @@ def gev_log_prob(
     """Log PDF of the Generalized Extreme Value distribution."""
     shape = jnp.asarray(shape)
     x = jnp.asarray(x)
-    z = _finite_z(x, loc, scale)
+    z = clamped_standardize(x, loc, scale)
     valid, u_safe = _support(shape, z)
 
     w = _reduced_exponent(z, u_safe, valid)
@@ -107,7 +98,7 @@ def gev_cdf(
     """CDF of the Generalized Extreme Value distribution."""
     shape = jnp.asarray(shape)
     x = jnp.asarray(x)
-    z = _finite_z(x, loc, scale)
+    z = clamped_standardize(x, loc, scale)
     valid, u_safe = _support(shape, z)
 
     w = _reduced_exponent(z, u_safe, valid)
@@ -135,7 +126,7 @@ def gev_survival(
     """
     shape = jnp.asarray(shape)
     x = jnp.asarray(x)
-    z = _finite_z(x, loc, scale)
+    z = clamped_standardize(x, loc, scale)
     valid, u_safe = _support(shape, z)
 
     w = _reduced_exponent(z, u_safe, valid)
@@ -159,7 +150,7 @@ def gev_log_survival(
     r"""Log survival function :math:`\log S(x) = \log(1 - F(x))` of the GEV."""
     shape = jnp.asarray(shape)
     x = jnp.asarray(x)
-    z = _finite_z(x, loc, scale)
+    z = clamped_standardize(x, loc, scale)
     valid, u_safe = _support(shape, z)
 
     w = _reduced_exponent(z, u_safe, valid)

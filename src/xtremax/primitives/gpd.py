@@ -19,37 +19,42 @@ from __future__ import annotations
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from xtremax.primitives._common import expm1_over_x, log1p_over_x
+from xtremax.primitives._common import (
+    clamped_standardize,
+    expm1_over_x,
+    log1p_over_x,
+)
 
 
 def _reduced_exponent(
-    x: Float[Array, ...],
-    scale: Float[Array, ...],
-    v_safe: Float[Array, ...],
-    valid: Array,
+    r: Float[Array, ...], v_safe: Float[Array, ...], valid: Array
 ) -> Array:
     r"""Return :math:`w = \log(1 + \xi x/\sigma)/\xi`, so ``t^{-1/ξ} = exp(-w)``.
 
-    ``v_safe = ξ x/σ`` must already be masked to ``> -1``. As ``ξ → 0`` this
-    tends to ``x/σ`` (the exponential rate term), smoothly.
+    ``r = x/σ`` is the (clamped) standardized value and ``v_safe = ξ r`` must
+    already be masked to ``> -1``. As ``ξ → 0`` this tends to ``r`` (the
+    exponential rate term), smoothly.
     """
-    # Out-of-support points carry a large ``x``; zero it so the downstream
+    # Out-of-support points carry a large ``r``; zero it so the downstream
     # ``exp(-w)`` cannot overflow into a NaN gradient in the discarded branch.
-    x_safe = jnp.where(valid, x, 0.0)
-    return (x_safe / scale) * log1p_over_x(v_safe)
+    r_safe = jnp.where(valid, r, 0.0)
+    return r_safe * log1p_over_x(v_safe)
 
 
-def _support(
-    x: Float[Array, ...], scale: Float[Array, ...], shape: Float[Array, ...]
-) -> tuple[Array, Array]:
-    r"""Return ``(valid, v_safe)`` for ``v = ξx/σ`` and the support ``v > -1``.
+def _support(r: Float[Array, ...], shape: Float[Array, ...]) -> tuple[Array, Array]:
+    r"""Return ``(valid, v_safe)`` for ``v = ξ·r`` and the support ``v > -1``.
 
-    Callers pass a finite in-support ``x`` (``x < 0`` and ``x = +inf`` are handled
-    by each public function), so ``v = ξx/σ`` is always finite here.
+    ``r = x/σ`` is the clamped standardized value, so ``v = ξr`` is always finite
+    (even when a tiny ``σ`` would otherwise overflow the raw ratio).
     """
-    v = shape * x / scale
+    v = shape * r
     valid = v > -1.0
     return valid, jnp.where(valid, v, 0.0)
+
+
+def _standardize_exceedance(x: Float[Array, ...], scale: Float[Array, ...]) -> Array:
+    """Clamped ``x/σ`` (loc is 0 for the GPD)."""
+    return clamped_standardize(x, 0.0, scale)
 
 
 def gpd_log_prob(
@@ -62,9 +67,10 @@ def gpd_log_prob(
     x = jnp.asarray(x)
     finite = jnp.isfinite(x)
     x_calc = jnp.where(finite, x, 0.0)
-    valid, v_safe = _support(x_calc, scale, shape)
+    r = _standardize_exceedance(x_calc, scale)
+    valid, v_safe = _support(r, shape)
 
-    w = _reduced_exponent(x_calc, scale, v_safe, valid)
+    w = _reduced_exponent(r, v_safe, valid)
     log_t = jnp.log1p(v_safe)
     # -log σ - (1/ξ + 1) log(1 + ξx/σ) = -log σ - (w + log_t); → -log σ - x/σ.
     log_pdf = -jnp.log(scale) - (w + log_t)
@@ -89,9 +95,10 @@ def gpd_cdf(
     below = x < 0.0
     posinf = jnp.isposinf(x)
     x_calc = jnp.where(below | posinf, 0.0, x)
-    valid, v_safe = _support(x_calc, scale, shape)
+    r = _standardize_exceedance(x_calc, scale)
+    valid, v_safe = _support(r, shape)
 
-    w = _reduced_exponent(x_calc, scale, v_safe, valid)
+    w = _reduced_exponent(r, v_safe, valid)
     # 1 - t^{-1/ξ} = 1 - exp(-w) = -expm1(-w); → 1 - exp(-x/σ) in the limit.
     cdf_inside = -jnp.expm1(-w)
     # Beyond the support, ξ > 0 tails map out-of-support CDF to 0 (lower
@@ -120,9 +127,10 @@ def gpd_survival(
     below = x < 0.0
     posinf = jnp.isposinf(x)
     x_calc = jnp.where(below | posinf, 0.0, x)
-    valid, v_safe = _support(x_calc, scale, shape)
+    r = _standardize_exceedance(x_calc, scale)
+    valid, v_safe = _support(r, shape)
 
-    w = _reduced_exponent(x_calc, scale, v_safe, valid)
+    w = _reduced_exponent(r, v_safe, valid)
     s_inside = jnp.exp(-w)
     # Above the finite Weibull-type upper bound (ξ < 0) S = 0; ξ > 0 has no
     # upper bound so `valid` never fails there for x ≥ 0.
@@ -148,9 +156,10 @@ def gpd_log_survival(
     below = x < 0.0
     posinf = jnp.isposinf(x)
     x_calc = jnp.where(below | posinf, 0.0, x)
-    valid, v_safe = _support(x_calc, scale, shape)
+    r = _standardize_exceedance(x_calc, scale)
+    valid, v_safe = _support(r, shape)
 
-    w = _reduced_exponent(x_calc, scale, v_safe, valid)
+    w = _reduced_exponent(r, v_safe, valid)
     ls = jnp.where(valid, -w, -jnp.inf)
     ls = jnp.where(posinf, -jnp.inf, ls)  # log S(+inf) = -inf
     ls = jnp.where(below, 0.0, ls)

@@ -27,21 +27,50 @@ EULER_GAMMA = 0.5772156649015329
 # float64 eps at the crossover while staying comfortably accurate in float32.
 _SERIES_THRESHOLD = 1e-3
 
-# Clip the argument of ``exp`` below the float32 overflow threshold (~88.7). By
-# ``exp(80)`` the GEV/GPD tails have already saturated (cdf 0/1) in both float32
-# and float64, so clipping changes no observable value but keeps the deep-tail
-# gradient finite instead of forming ``0 · inf = NaN``.
-_EXP_ARG_MAX = 80.0
+
+def clamped_standardize(
+    x: Float[Array, ...], loc: Float[Array, ...], scale: Float[Array, ...]
+) -> Array:
+    r"""Return ``(x - loc) / scale`` clamped only against literal overflow.
+
+    Two guards keep ``z`` finite without ever distorting a physically
+    meaningful standardized value:
+
+    - A non-finite ``x`` is replaced by ``loc`` (so ``z → 0``) *before* the
+      division. Callers override the value for ``±inf`` via their own
+      extended-real limit; sanitizing the input here means a ``±inf`` never
+      forms an ``inf / scale²`` term in the reverse-mode gradient.
+    - The ratio is clipped to ``±sqrt(max)`` afterwards. A tiny (even
+      subnormal) ``scale`` sends the raw ratio to ``±inf``, which would poison
+      ``ξz`` and ``log1p(ξz)/ξ`` with a ``nan``; ``sqrt(max)`` is loose enough
+      that both ``z`` and ``z²`` (the latter appears in the shape gradient) stay
+      representable, and sits far beyond any real standardized value, so genuine
+      heavy (Fréchet) upper tails are returned untouched. The deep-tail
+      ``exp(-w)`` overflow is handled separately by :func:`safe_exp_neg`.
+    """
+    x = jnp.asarray(x)
+    x_safe = jnp.where(jnp.isfinite(x), x, loc)
+    z = (x_safe - loc) / scale
+    z_max = jnp.sqrt(jnp.finfo(z.dtype).max)
+    return jnp.clip(z, -z_max, z_max)
 
 
 def safe_exp_neg(w: Float[Array, ...]) -> Array:
-    r"""``exp(-w)`` with ``-w`` clipped below the overflow threshold.
+    r"""Return ``exp(-w)`` with the argument floored so it can never overflow.
 
-    Used wherever the deep lower tail drives ``w \to -\infty`` (e.g. the Gumbel
-    ``ξ = 0`` limit at very negative ``z``): the value is unchanged (the result
-    has already saturated) but the reverse-mode gradient stays finite.
+    In the Gumbel deep lower tail ``w → -∞`` and the raw ``exp(-w)`` overflows to
+    ``inf``; worse, the reverse-mode shape gradient of the log density scales as
+    ``exp(-w) · z²``, so an unbounded ``exp(-w)`` yields ``0 · inf = nan`` in the
+    discarded ``jnp.where`` branch. Flooring ``w`` at ``-(log(max) - 2·log log
+    max)`` caps ``exp(-w)`` a couple of e-folds below the dtype ceiling — chosen
+    so ``exp(-w) · z²`` also stays finite (``z ≈ -w`` there) — and zeroes the
+    gradient of the saturated branch. The value cap is immaterial: the density is
+    already numerically zero that far into the tail.
     """
-    return jnp.exp(-jnp.maximum(w, -_EXP_ARG_MAX))
+    w = jnp.asarray(w)
+    log_max = jnp.log(jnp.finfo(w.dtype).max)
+    exp_arg_max = log_max - 2.0 * jnp.log(log_max)
+    return jnp.exp(-jnp.maximum(w, -exp_arg_max))
 
 
 def log1p_over_x(u: Float[Array, ...]) -> Float[Array, ...]:

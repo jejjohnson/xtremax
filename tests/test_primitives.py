@@ -552,12 +552,36 @@ class TestExtendedRealLimits:
     @pytest.mark.parametrize(
         "fn", [gev_log_prob, gev_cdf, gev_survival, gev_log_survival]
     )
-    @pytest.mark.parametrize("z", [-100.0, -500.0])
-    def test_gumbel_deep_tail_grad_finite(self, fn, z):
+    @pytest.mark.parametrize("z", [-100.0, -500.0, -1e6])
+    @pytest.mark.parametrize("argnums", [1, 2, 3])  # loc, scale, shape
+    def test_gumbel_deep_tail_grad_finite(self, fn, z, argnums):
         """The Gumbel (ξ=0) deep lower tail drives exp(-w) past the float32
-        overflow, which used to give a NaN parameter gradient."""
-        g = jax.grad(lambda s: fn(z, 0.0, s, 0.0))(1.0)
+        overflow; every parameter gradient (incl. the shape gradient, which
+        scales as exp(-w)·z²) must stay finite rather than 0·inf = NaN."""
+        g = jax.grad(fn, argnums=argnums)(jnp.asarray(z), 0.0, 1.0, 0.0)
         assert jnp.isfinite(g)
+
+    @pytest.mark.parametrize("fn", [gev_cdf, gev_survival, gpd_cdf, gpd_survival])
+    def test_tiny_scale_cdf_survival_finite(self, fn):
+        """A finite observation with a tiny (even subnormal) scale overflows the
+        raw (x-loc)/σ; the clamped standardization must keep the bounded CDF /
+        survival finite in [0, 1], not NaN."""
+        args = (
+            (10.0, 0.0, 1e-38, 0.2)
+            if fn in (gev_cdf, gev_survival)
+            else (10.0, 1e-38, 0.2)
+        )
+        out = fn(*args)
+        assert jnp.isfinite(out)
+        assert 0.0 <= float(out) <= 1.0
+
+    @pytest.mark.parametrize("fn", [gev_log_prob, gpd_log_prob])
+    def test_tiny_scale_log_prob_not_nan(self, fn):
+        """The log density at a tiny scale is a degenerate ±inf limit — the
+        observation sits infinitely far into the tail as σ → 0, and the -log σ
+        normalizer diverges — but it must never collapse to NaN."""
+        args = (10.0, 0.0, 1e-38, 0.2) if fn is gev_log_prob else (10.0, 1e-38, 0.2)
+        assert not jnp.isnan(fn(*args))
 
     @pytest.mark.parametrize(
         "fn, args",
