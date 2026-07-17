@@ -33,7 +33,12 @@ def pairwise_distances(coords: Float[Array, ...]) -> Float[Array, ...]:
     """
     coords = jnp.asarray(coords)
     deltas = coords[:, None, :] - coords[None, :, :]
-    return jnp.linalg.norm(deltas, axis=-1)
+    # ‖·‖ has derivative Δ/‖Δ‖, which is 0/0 on the zero diagonal and yields NaN
+    # gradients. Take sqrt of a masked-positive squared distance, then restore
+    # the exact zero diagonal — value and gradient are both finite.
+    sq = jnp.sum(deltas**2, axis=-1)
+    positive = sq > 0.0
+    return jnp.where(positive, jnp.sqrt(jnp.where(positive, sq, 1.0)), 0.0)
 
 
 def design_matrix(covariates: Float[Array, ...]) -> Float[Array, ...]:
@@ -53,7 +58,8 @@ def design_matrix(covariates: Float[Array, ...]) -> Float[Array, ...]:
     if covariates.ndim == 1:
         covariates = covariates[:, None]
     n_sites = covariates.shape[0]
-    return jnp.concatenate([jnp.ones((n_sites, 1)), covariates], axis=1)
+    intercept = jnp.ones((n_sites, 1), dtype=covariates.dtype)
+    return jnp.concatenate([intercept, covariates], axis=1)
 
 
 def two_range_correlation(

@@ -10,6 +10,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import pytest
+import scipy.stats as st
 
 from xtremax import (
     frechet_cdf,
@@ -25,7 +26,10 @@ from xtremax import (
     gpd_cdf,
     gpd_icdf,
     gpd_log_prob,
+    gpd_log_survival,
     gpd_mean,
+    gpd_return_level,
+    gpd_survival,
     gumbel_cdf,
     gumbel_icdf,
     gumbel_log_prob,
@@ -40,6 +44,10 @@ from xtremax import (
 
 
 Q_GRID = jnp.array([0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95])
+
+# Shape values straddling the Gumbel/exponential limit, including the float32
+# danger band 1e-7 < |ξ| < 1e-4 where the old kernels lost precision.
+XI_BAND = [-0.5, -0.05, -1e-4, -1e-6, 0.0, 1e-6, 1e-4, 0.05, 0.2, 0.9]
 
 
 class TestGEV:
@@ -268,3 +276,127 @@ class TestClassPrimitiveParity:
         d = WeibullType3GEVD(0.0, 1.0, -0.2)
         x = jnp.linspace(-3.0, 2.0, 20)
         assert jnp.allclose(d.log_prob(x), weibull_log_prob(x, 0.0, 1.0, -0.2))
+
+
+class TestGEVOracle:
+    """Compare GEV primitives against scipy.stats.genextreme (c = -ξ).
+
+    Guards against systematic parameterization errors that the circular
+    class-vs-primitive parity tests cannot catch, and pins the float32
+    accuracy of the small-ξ band (the reformulated log1p/expm1 kernels).
+    """
+
+    @pytest.mark.parametrize("xi", XI_BAND)
+    def test_cdf_logpdf_match_scipy(self, xi):
+        x = jnp.linspace(-1.5, 4.0, 15)
+        ref = st.genextreme(-xi, loc=0.0, scale=1.0)
+        assert jnp.allclose(gev_cdf(x, 0.0, 1.0, xi), ref.cdf(x), atol=1e-5)
+        # rtol on the log-density: near the support endpoint |logpdf| is huge
+        # (density ≈ 0), so an absolute tolerance is meaningless there.
+        assert jnp.allclose(
+            gev_log_prob(x, 0.0, 1.0, xi), ref.logpdf(x), atol=1e-4, rtol=1e-4
+        )
+
+    @pytest.mark.parametrize("xi", XI_BAND)
+    def test_icdf_matches_scipy(self, xi):
+        ref = st.genextreme(-xi, loc=0.0, scale=1.0)
+        assert jnp.allclose(gev_icdf(Q_GRID, 0.0, 1.0, xi), ref.ppf(Q_GRID), atol=1e-4)
+
+    def test_small_shape_band_continuous(self):
+        """cdf/log_prob/mean must not jump across the Gumbel threshold."""
+        for xi in [1e-6, -1e-6, 1e-4, -1e-4]:
+            assert float(gev_cdf(1.0, 0.0, 1.0, xi)) == pytest.approx(
+                float(gev_cdf(1.0, 0.0, 1.0, 0.0)), abs=1e-4
+            )
+            assert float(gev_log_prob(1.0, 0.0, 1.0, xi)) == pytest.approx(
+                float(gev_log_prob(1.0, 0.0, 1.0, 0.0)), abs=1e-4
+            )
+
+    @pytest.mark.parametrize("xi", [2e-7, 1e-6, 1e-4, 1e-3, 1e-2, 0.2, -0.3])
+    def test_mean_matches_scipy_small_shape(self, xi):
+        """Regression: gev_mean returned garbage / negative-scale values in the
+        small-ξ band from the Γ(1-ξ)-1 cancellation (issue #44)."""
+        got = float(gev_mean(0.0, 1.0, xi))
+        ref = float(st.genextreme(-xi).mean())
+        assert got == pytest.approx(ref, abs=1e-3)
+
+
+class TestGEVGradientStability:
+    """Gradient regressions for the reformulated GEV kernels (issue #45)."""
+
+    @pytest.mark.parametrize(
+        "fn, x, xi",
+        [
+            (gev_log_prob, -90.0, -0.1),
+            (gev_cdf, -120.0, -0.1),
+            (gev_return_level, 100.0, 0.2),
+        ],
+    )
+    def test_grad_finite_in_weibull_tail(self, fn, x, xi):
+        """Deep-tail Weibull points used to yield NaN gradients from the
+        unsanitized ``exp(-z)`` Gumbel branch (double-where trap)."""
+        g = jax.grad(fn, argnums=(1, 2, 3))(jnp.asarray(x), 0.0, 1.0, xi)
+        assert all(jnp.all(jnp.isfinite(gi)) for gi in g)
+
+    def test_dshape_grad_nonzero_at_zero(self):
+        """∂/∂ξ was identically 0 in the |ξ|<threshold dead zone, so a GEV fit
+        started at the Gumbel model could never move ξ."""
+        h = 1e-3
+        for fn, arg in [(gev_log_prob, 1.5), (gev_icdf, 0.9)]:
+            grad = float(jax.grad(fn, argnums=3)(jnp.asarray(arg), 0.0, 1.0, 0.0))
+            fd = float(fn(arg, 0.0, 1.0, h) - fn(arg, 0.0, 1.0, -h)) / (2 * h)
+            assert abs(grad) > 1e-2
+            assert grad == pytest.approx(fd, rel=5e-2)
+
+
+class TestReturnLevelPrecision:
+    """Large-T return levels lost precision from the 1 - 1/T cancellation."""
+
+    @pytest.mark.parametrize("period", [1e2, 1e4, 1e6])
+    @pytest.mark.parametrize("xi", [0.1, -0.1])
+    def test_gev_return_level_large_period(self, period, xi):
+        got = float(gev_return_level(period, 0.0, 1.0, xi))
+        ref = float(st.genextreme(-xi).ppf(1.0 - 1.0 / period))
+        assert got == pytest.approx(ref, rel=1e-4)
+
+    @pytest.mark.parametrize("period", [1e2, 1e4, 1e6])
+    @pytest.mark.parametrize("xi", [0.2, -0.2])
+    def test_gpd_return_level_large_period(self, period, xi):
+        got = float(gpd_return_level(period, 1.0, xi))
+        ref = float(st.genpareto(xi).ppf(1.0 - 1.0 / period))
+        assert got == pytest.approx(ref, rel=1e-4)
+
+
+class TestGPDOracle:
+    """GPD primitives vs scipy.stats.genpareto (c = ξ), incl. new survival."""
+
+    @pytest.mark.parametrize("xi", XI_BAND)
+    def test_cdf_logpdf_match_scipy(self, xi):
+        x = jnp.linspace(0.05, 6.0, 15)
+        ref = st.genpareto(xi, loc=0.0, scale=1.0)
+        assert jnp.allclose(gpd_cdf(x, 1.0, xi), ref.cdf(x), atol=1e-5)
+        assert jnp.allclose(
+            gpd_log_prob(x, 1.0, xi), ref.logpdf(x), atol=1e-4, rtol=1e-4
+        )
+
+    @pytest.mark.parametrize("xi", XI_BAND)
+    def test_survival_matches_scipy(self, xi):
+        x = jnp.linspace(0.05, 6.0, 15)
+        ref = st.genpareto(xi, loc=0.0, scale=1.0)
+        assert jnp.allclose(gpd_survival(x, 1.0, xi), ref.sf(x), atol=1e-6)
+        assert jnp.allclose(
+            gpd_log_survival(x, 1.0, xi), ref.logsf(x), atol=1e-4, rtol=1e-4
+        )
+
+    def test_survival_equals_one_minus_cdf(self):
+        x = jnp.linspace(0.05, 6.0, 15)
+        for xi in [-0.2, 5e-8, 1e-4, 0.3]:
+            s = gpd_survival(x, 1.0, xi)
+            c = gpd_cdf(x, 1.0, xi)
+            assert jnp.allclose(s + c, 1.0, atol=1e-6)
+
+    def test_cdf_tail_accuracy_small_argument(self):
+        """gpd_cdf(1e-6) was ~19% off from ``1 - power`` cancellation."""
+        got = float(gpd_cdf(1e-6, 1.0, 0.2))
+        ref = float(st.genpareto(0.2).cdf(1e-6))
+        assert got == pytest.approx(ref, rel=1e-4)

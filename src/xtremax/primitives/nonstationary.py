@@ -285,13 +285,24 @@ def nonstationary_return_level(
     if upper is None:
         upper = jnp.max(loc + 20.0 * scale, axis=time_axis)
 
-    # The residual is monotone decreasing in ``level`` and tends to ``-target``
-    # as ``level -> +inf`` (every block's survival vanishes, including past the
-    # finite Weibull endpoint where ``gev_survival`` saturates to 0). A fixed
-    # ``loc + 20*scale`` underestimates heavy Fréchet tails, so grow the upper
-    # bracket until it actually brackets the root before bisecting.
-    upper = _expand_upper_bracket(residual, lower, upper)
+    lower, upper = jnp.broadcast_arrays(jnp.asarray(lower), jnp.asarray(upper))
 
-    return _bisect_monotone_decreasing(
-        residual, lower, upper, num_steps=num_bisection_steps
-    )
+    def solve(fn, initial_guess):
+        del initial_guess
+        # The residual is monotone decreasing in ``level`` and tends to
+        # ``-target`` as ``level -> +inf`` (every block's survival vanishes,
+        # including past the finite Weibull endpoint where ``gev_survival``
+        # saturates to 0). A fixed ``loc + 20*scale`` underestimates heavy
+        # Fréchet tails, so grow the upper bracket until it brackets the root.
+        up = _expand_upper_bracket(fn, lower, upper)
+        return _bisect_monotone_decreasing(fn, lower, up, num_steps=num_bisection_steps)
+
+    # ``custom_root`` supplies the derivative via the implicit function theorem
+    # (dz/dθ = -(∂R/∂θ)/(∂R/∂z)) instead of differentiating the bracketing
+    # ``while_loop`` (which reverse-mode AD cannot handle) or the discrete
+    # bisection comparisons (whose gradient is identically zero). The linear
+    # tangent problem is diagonal, so it is solved elementwise.
+    def tangent_solve(g, y):
+        return y / g(jnp.ones_like(y))
+
+    return jax.lax.custom_root(residual, lower, solve, tangent_solve)

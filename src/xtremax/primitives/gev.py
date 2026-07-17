@@ -1,8 +1,12 @@
 """Pure-JAX primitives for the Generalized Extreme Value distribution.
 
-All functions are stateless, ``jax.jit`` / ``jax.grad`` / ``jax.vmap`` safe,
-and branch on the Gumbel limit (:math:`\\xi \\approx 0`) via ``jnp.where``
-so both the general and limiting formulas are always traceable.
+All functions are stateless, ``jax.jit`` / ``jax.grad`` / ``jax.vmap`` safe.
+The Gumbel limit (:math:`\\xi \\to 0`) is handled *smoothly* rather than by a
+hard ``jnp.where`` branch: the kernels are written through
+:func:`xtremax.primitives._common.log1p_over_x` and ``expm1_over_x`` so that
+:math:`\\log(1 + \\xi z)/\\xi \\to z` and the shape-parameter gradient stays
+finite and correct as :math:`\\xi \\to 0` (in particular
+:math:`\\partial/\\partial\\xi \\neq 0` at :math:`\\xi = 0`).
 
 The parameterization follows Coles (2001):
 
@@ -20,20 +24,30 @@ import jax.numpy as jnp
 from jax.scipy.special import gammaln
 from jaxtyping import Array, Float
 
+from xtremax.primitives._common import (
+    EULER_GAMMA,
+    expm1_over_x,
+    log1p_over_x,
+)
 
-_EULER_GAMMA = 0.5772156649015329
-_GUMBEL_THRESHOLD = 1e-7
+
+# Coefficients of gammaln(1 - ξ)/ξ = γ + Σ_{k≥2} ζ(k)/k · ξ^{k-1}, used for the
+# mean's small-ξ series. Accurate to ~3e-8 for |ξ| ≤ the threshold below.
+_ZETA2_2 = 0.8224670334241132  # ζ(2)/2 = π²/12
+_ZETA3_3 = 0.4006856343865314  # ζ(3)/3
+_ZETA4_4 = 0.2705808084277845  # ζ(4)/4 = π⁴/360
+_MEAN_SERIES_THRESHOLD = 2e-2
 
 
-def _safe_shape(shape: Float[Array, ...]) -> Float[Array, ...]:
-    """Replace a near-zero shape with 1.0 so divisions trace cleanly.
+def _reduced_exponent(z: Float[Array, ...], u_safe: Float[Array, ...]) -> Array:
+    r"""Return :math:`w = \log(1 + \xi z)/\xi = z \cdot \mathrm{log1p\_over\_x}(u)`.
 
-    The caller is expected to mask the result with ``is_gumbel`` via
-    ``jnp.where`` so the substituted value never leaks into the output.
+    ``t^{-1/ξ} = exp(-w)`` and ``(1/ξ + 1) log(1 + ξz) = w + log1p(u)``, so the
+    whole GEV kernel is expressed through ``w`` with no direct division by
+    ``ξ`` — which is what keeps the Gumbel limit smooth. ``u_safe`` must already
+    be masked to ``> -1``.
     """
-    shape = jnp.asarray(shape)
-    is_gumbel = jnp.abs(shape) < _GUMBEL_THRESHOLD
-    return jnp.where(is_gumbel, 1.0, shape)
+    return z * log1p_over_x(u_safe)
 
 
 def gev_log_prob(
@@ -44,20 +58,16 @@ def gev_log_prob(
 ) -> Float[Array, ...]:
     """Log PDF of the Generalized Extreme Value distribution."""
     shape = jnp.asarray(shape)
-    is_gumbel = jnp.abs(shape) < _GUMBEL_THRESHOLD
-    xi = _safe_shape(shape)
-
     z = (x - loc) / scale
-    t = 1.0 + xi * z
-    valid = t > 0.0
-    t_safe = jnp.where(valid, t, 1.0)
-    log_t = jnp.log(t_safe)
+    u = shape * z
+    valid = u > -1.0
+    u_safe = jnp.where(valid, u, 0.0)
 
-    gumbel = -jnp.log(scale) - z - jnp.exp(-z)
-    gevd = -jnp.log(scale) - (1.0 / xi + 1.0) * log_t - jnp.power(t_safe, -1.0 / xi)
-    gevd = jnp.where(valid, gevd, -jnp.inf)
+    w = _reduced_exponent(z, u_safe)
+    log_t = jnp.log1p(u_safe)
+    log_pdf = -jnp.log(scale) - (w + log_t) - jnp.exp(-w)
 
-    return jnp.where(is_gumbel, gumbel, gevd)
+    return jnp.where(valid, log_pdf, -jnp.inf)
 
 
 def gev_cdf(
@@ -68,21 +78,17 @@ def gev_cdf(
 ) -> Float[Array, ...]:
     """CDF of the Generalized Extreme Value distribution."""
     shape = jnp.asarray(shape)
-    is_gumbel = jnp.abs(shape) < _GUMBEL_THRESHOLD
-    xi = _safe_shape(shape)
-
     z = (x - loc) / scale
-    t = 1.0 + xi * z
-    valid = t > 0.0
-    t_safe = jnp.where(valid, t, 1.0)
+    u = shape * z
+    valid = u > -1.0
+    u_safe = jnp.where(valid, u, 0.0)
 
-    gumbel = jnp.exp(-jnp.exp(-z))
-    gevd_inside = jnp.exp(-jnp.power(t_safe, -1.0 / xi))
+    w = _reduced_exponent(z, u_safe)
+    cdf_inside = jnp.exp(-jnp.exp(-w))
     # Fréchet tails (ξ > 0) map out-of-support to 0; Weibull tails to 1.
-    boundary = jnp.where(xi > 0, 0.0, 1.0)
-    gevd = jnp.where(valid, gevd_inside, boundary)
+    boundary = jnp.where(shape > 0, 0.0, 1.0)
 
-    return jnp.where(is_gumbel, gumbel, gevd)
+    return jnp.where(valid, cdf_inside, boundary)
 
 
 def gev_survival(
@@ -98,22 +104,18 @@ def gev_survival(
     instead of cancelling against 1.0.
     """
     shape = jnp.asarray(shape)
-    is_gumbel = jnp.abs(shape) < _GUMBEL_THRESHOLD
-    xi = _safe_shape(shape)
-
     z = (x - loc) / scale
-    t = 1.0 + xi * z
-    valid = t > 0.0
-    t_safe = jnp.where(valid, t, 1.0)
+    u = shape * z
+    valid = u > -1.0
+    u_safe = jnp.where(valid, u, 0.0)
 
-    gumbel = -jnp.expm1(-jnp.exp(-z))
-    gev_inside = -jnp.expm1(-jnp.power(t_safe, -1.0 / xi))
+    w = _reduced_exponent(z, u_safe)
+    s_inside = -jnp.expm1(-jnp.exp(-w))
     # Below the Fréchet (ξ > 0) lower endpoint S = 1; above the Weibull
     # (ξ < 0) upper endpoint S = 0.
     boundary = jnp.where(shape > 0, 1.0, 0.0)
-    gevd = jnp.where(valid, gev_inside, boundary)
 
-    return jnp.where(is_gumbel, gumbel, gevd)
+    return jnp.where(valid, s_inside, boundary)
 
 
 def gev_log_survival(
@@ -124,20 +126,35 @@ def gev_log_survival(
 ) -> Float[Array, ...]:
     r"""Log survival function :math:`\log S(x) = \log(1 - F(x))` of the GEV."""
     shape = jnp.asarray(shape)
-    is_gumbel = jnp.abs(shape) < _GUMBEL_THRESHOLD
-    xi = _safe_shape(shape)
-
     z = (x - loc) / scale
-    t = 1.0 + xi * z
-    valid = t > 0.0
-    t_safe = jnp.where(valid, t, 1.0)
+    u = shape * z
+    valid = u > -1.0
+    u_safe = jnp.where(valid, u, 0.0)
 
-    gumbel = jnp.log(-jnp.expm1(-jnp.exp(-z)))
-    gev_inside = jnp.log(-jnp.expm1(-jnp.power(t_safe, -1.0 / xi)))
+    w = _reduced_exponent(z, u_safe)
+    ls_inside = jnp.log(-jnp.expm1(-jnp.exp(-w)))
     boundary = jnp.where(shape > 0, 0.0, -jnp.inf)
-    gevd = jnp.where(valid, gev_inside, boundary)
 
-    return jnp.where(is_gumbel, gumbel, gevd)
+    return jnp.where(valid, ls_inside, boundary)
+
+
+def _gev_icdf_from_neg_log_q(
+    neg_log_q: Float[Array, ...],
+    loc: Float[Array, ...],
+    scale: Float[Array, ...],
+    shape: Float[Array, ...],
+) -> Float[Array, ...]:
+    r"""GEV quantile from :math:`-\log q` (avoids forming ``1 - tiny``).
+
+    .. math:: F^{-1}(q) = \mu + \frac{\sigma}{\xi}\big[(-\log q)^{-\xi} - 1\big]
+        = \mu - \sigma L \cdot \frac{\exp(-\xi L) - 1}{-\xi L},\quad L = \log(-\log q)
+
+    which tends to :math:`\mu - \sigma L` (the Gumbel quantile) as
+    :math:`\xi \to 0`, smoothly and with a correct shape gradient.
+    """
+    log_term = jnp.log(neg_log_q)
+    a = -shape * log_term
+    return loc - scale * log_term * expm1_over_x(a)
 
 
 def gev_icdf(
@@ -147,15 +164,7 @@ def gev_icdf(
     shape: Float[Array, ...],
 ) -> Float[Array, ...]:
     """Quantile function (inverse CDF) of the GEV distribution."""
-    shape = jnp.asarray(shape)
-    is_gumbel = jnp.abs(shape) < _GUMBEL_THRESHOLD
-    xi = _safe_shape(shape)
-
-    log_q = jnp.log(q)
-    gumbel = loc - scale * jnp.log(-log_q)
-    gevd = loc + (scale / xi) * (jnp.power(-log_q, -xi) - 1.0)
-
-    return jnp.where(is_gumbel, gumbel, gevd)
+    return _gev_icdf_from_neg_log_q(-jnp.log(q), loc, scale, shape)
 
 
 def gev_mean(
@@ -163,17 +172,39 @@ def gev_mean(
     scale: Float[Array, ...],
     shape: Float[Array, ...],
 ) -> Float[Array, ...]:
-    r"""Mean of the GEV distribution (``+inf`` when :math:`\xi \ge 1`)."""
+    r"""Mean of the GEV distribution (``+inf`` when :math:`\xi \ge 1`).
+
+    .. math:: \mathbb{E}[X] = \mu + \sigma\,\frac{\Gamma(1 - \xi) - 1}{\xi}
+        = \mu + \sigma\,\frac{\mathrm{expm1}(\log\Gamma(1 - \xi))}{\xi}
+
+    The ``expm1`` form avoids the catastrophic ``Γ(1 - ξ) - 1`` cancellation
+    for small ``ξ`` (which otherwise makes the mean wildly wrong in float32);
+    a Taylor branch covers the immediate neighbourhood of ``ξ = 0`` where the
+    quotient is ``0/0``.
+    """
     shape = jnp.asarray(shape)
-    is_gumbel = jnp.abs(shape) < _GUMBEL_THRESHOLD
-    xi = _safe_shape(shape)
+    finite = shape < 1.0
+    # Sanitize the divergent branch (ξ ≥ 1, and gammaln(1 - ξ) for ξ ≥ 1) so it
+    # contributes neither a nan value nor a nan gradient before being masked.
+    xi = jnp.where(finite, shape, 0.0)
 
-    gumbel = loc + scale * _EULER_GAMMA
-    gamma_term = jnp.exp(gammaln(1.0 - xi))
-    gevd = loc + (scale / xi) * (gamma_term - 1.0)
+    # (Γ(1 - ξ) - 1)/ξ = [expm1(g)/g] · [g/ξ] with g = gammaln(1 - ξ). The first
+    # factor is the smooth expm1_over_x; the second, g/ξ = γ + Σ_{k≥2} ζ(k)/k
+    # ξ^{k-1}, has a removable singularity at ξ = 0. A direct g/ξ loses float32
+    # precision for small ξ (tiny gammaln ÷ tiny ξ), so use the ζ-series there.
+    g = gammaln(1.0 - xi)
+    small = jnp.abs(xi) < _MEAN_SERIES_THRESHOLD
+    xi_exact = jnp.where(small, 1.0, xi)
+    ratio_exact = g / xi_exact
+    xi_series = jnp.where(small, xi, 0.0)
+    ratio_series = EULER_GAMMA + xi_series * (
+        _ZETA2_2 + xi_series * (_ZETA3_3 + xi_series * _ZETA4_4)
+    )
+    ratio = jnp.where(small, ratio_series, ratio_exact)
+    coeff = expm1_over_x(g) * ratio
 
-    mean = jnp.where(is_gumbel, gumbel, gevd)
-    return jnp.where(shape < 1.0, mean, jnp.inf)
+    mean = loc + scale * coeff
+    return jnp.where(finite, mean, jnp.inf)
 
 
 def gev_return_level(
@@ -182,5 +213,11 @@ def gev_return_level(
     scale: Float[Array, ...],
     shape: Float[Array, ...],
 ) -> Float[Array, ...]:
-    r"""T-period return level: :math:`z_T = F^{-1}(1 - 1/T)`."""
-    return gev_icdf(1.0 - 1.0 / period, loc, scale, shape)
+    r"""T-period return level: :math:`z_T = F^{-1}(1 - 1/T)`.
+
+    Parameterized by :math:`-\log(1 - 1/T) = -\mathrm{log1p}(-1/T)` so the
+    quantile stays accurate for large ``T`` (where ``1 - 1/T`` rounds to 1 and
+    ``log(1 - 1/T)`` would lose all its precision).
+    """
+    neg_log_q = -jnp.log1p(-1.0 / period)
+    return _gev_icdf_from_neg_log_q(neg_log_q, loc, scale, shape)
