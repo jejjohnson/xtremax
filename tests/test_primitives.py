@@ -561,6 +561,16 @@ class TestExtendedRealLimits:
         g = jax.grad(fn, argnums=argnums)(jnp.asarray(z), 0.0, 1.0, 0.0)
         assert jnp.isfinite(g)
 
+    def test_gumbel_log_density_preserves_exp_term(self):
+        """The log density must keep the exp(-w) term wherever the dtype can
+        represent it — not cap it early like the CDF/survival stabilizer. At
+        z=-85 (Gumbel), exp(85) ≈ 8e36 is representable in float32, so the value
+        must match -z - exp(-z) rather than a value clipped at exp(80)."""
+        z = -85.0
+        ref = -z - jnp.exp(jnp.asarray(-z, dtype=jnp.float32))  # -log σ = 0
+        got = gev_log_prob(jnp.asarray(z), 0.0, 1.0, 0.0)
+        assert float(got) == pytest.approx(float(ref), rel=1e-4)
+
     @pytest.mark.parametrize("fn", [gev_cdf, gev_survival, gpd_cdf, gpd_survival])
     def test_tiny_scale_cdf_survival_finite(self, fn):
         """A finite observation with a tiny (even subnormal) scale overflows the

@@ -16,6 +16,7 @@ formulas are smooth through :math:`\\xi = 0`.
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
@@ -71,6 +72,28 @@ def safe_exp_neg(w: Float[Array, ...]) -> Array:
     log_max = jnp.log(jnp.finfo(w.dtype).max)
     exp_arg_max = log_max - 2.0 * jnp.log(log_max)
     return jnp.exp(-jnp.maximum(w, -exp_arg_max))
+
+
+def safe_exp_neg_density(w: Float[Array, ...]) -> Array:
+    r"""``exp(-w)`` for a log *density* term: exact value, overflow-free gradient.
+
+    :func:`safe_exp_neg` caps the *value* a couple of e-folds below the dtype
+    ceiling so that ``exp(-w)·z²`` stays finite — the right trade for an
+    already-saturated CDF / survival output, but wrong for a log density, whose
+    ``-exp(-w)`` term *is* the likelihood: capping it early would understate the
+    penalty (and drop the dominant gradient) for every observation in the deep
+    tail. Here the value is preserved right up to the representable limit
+    (``w = -log(max)``, saturating at ``max`` instead of ``inf`` beyond it),
+    while the reverse-mode derivative is separately floored via
+    :func:`safe_exp_neg` so the ``exp(-w)·z²`` shape gradient can never overflow
+    to ``0·inf = nan``. ``stop_gradient`` stitches the exact forward value onto
+    the safe gradient.
+    """
+    w = jnp.asarray(w)
+    log_max = jnp.log(jnp.finfo(w.dtype).max)
+    value = jnp.exp(-jnp.maximum(w, -log_max))
+    grad_safe = safe_exp_neg(w)
+    return grad_safe + jax.lax.stop_gradient(value - grad_safe)
 
 
 def log1p_over_x(u: Float[Array, ...]) -> Float[Array, ...]:

@@ -30,6 +30,7 @@ from xtremax.primitives._common import (
     expm1_over_x,
     log1p_over_x,
     safe_exp_neg,
+    safe_exp_neg_density,
 )
 
 
@@ -82,7 +83,7 @@ def gev_log_prob(
 
     w = _reduced_exponent(z, u_safe, valid)
     log_t = jnp.log1p(u_safe)
-    log_pdf = -jnp.log(scale) - (w + log_t) - safe_exp_neg(w)
+    log_pdf = -jnp.log(scale) - (w + log_t) - safe_exp_neg_density(w)
 
     # Density vanishes at x = ±inf; NaN input propagates.
     result = jnp.where(jnp.isfinite(x) & valid, log_pdf, -jnp.inf)
