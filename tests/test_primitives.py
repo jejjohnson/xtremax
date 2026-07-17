@@ -21,8 +21,10 @@ from xtremax import (
     gev_cdf,
     gev_icdf,
     gev_log_prob,
+    gev_log_survival,
     gev_mean,
     gev_return_level,
+    gev_survival,
     gpd_cdf,
     gpd_icdf,
     gpd_log_prob,
@@ -400,3 +402,59 @@ class TestGPDOracle:
         got = float(gpd_cdf(1e-6, 1.0, 0.2))
         ref = float(st.genpareto(0.2).cdf(1e-6))
         assert got == pytest.approx(ref, rel=1e-4)
+
+
+class TestExtendedRealLimits:
+    """The smooth log1p/expm1 reformulation must keep the support-endpoint and
+    ±inf limits that the old explicit branches returned (0·inf → NaN otherwise).
+    """
+
+    INF = float("inf")
+
+    @pytest.mark.parametrize(
+        "q, xi, expected",
+        [
+            (1.0, -0.2, 5.0),  # Weibull upper endpoint loc - σ/ξ
+            (1.0, 0.0, INF),  # Gumbel upper endpoint
+            (1.0, 0.2, INF),  # Fréchet unbounded above
+            (0.0, 0.2, -5.0),  # Fréchet lower endpoint loc - σ/ξ
+            (0.0, 0.0, -INF),  # Gumbel lower endpoint
+            (0.0, -0.2, -INF),  # Weibull unbounded below
+        ],
+    )
+    def test_gev_icdf_endpoints(self, q, xi, expected):
+        got = float(gev_icdf(q, 0.0, 1.0, xi))
+        if jnp.isinf(jnp.asarray(expected)):
+            assert got == expected
+        else:
+            assert got == pytest.approx(expected, abs=1e-5)
+
+    @pytest.mark.parametrize(
+        "xi, expected",
+        [(0.0, INF), (0.2, INF), (-0.3, 1.0 / 0.3)],  # -σ/ξ for ξ<0
+    )
+    def test_gpd_icdf_upper_endpoint(self, xi, expected):
+        got = float(gpd_icdf(1.0, 1.0, xi))
+        if jnp.isinf(jnp.asarray(expected)):
+            assert got == expected
+        else:
+            assert got == pytest.approx(expected, abs=1e-5)
+
+    def test_gev_cdf_survival_at_infinities_gumbel(self):
+        assert float(gev_cdf(-self.INF, 0.0, 1.0, 0.0)) == 0.0
+        assert float(gev_cdf(self.INF, 0.0, 1.0, 0.0)) == 1.0
+        assert float(gev_survival(-self.INF, 0.0, 1.0, 0.0)) == 1.0
+        assert float(gev_log_survival(-self.INF, 0.0, 1.0, 0.0)) == 0.0
+
+    def test_gpd_cdf_survival_at_positive_infinity(self):
+        # Exponential limit: F(+inf)=1, S(+inf)=0, and they must agree.
+        assert float(gpd_cdf(self.INF, 1.0, 0.0)) == 1.0
+        assert float(gpd_survival(self.INF, 1.0, 0.0)) == 0.0
+
+    @pytest.mark.parametrize("fn", [gpd_survival, gpd_cdf, gpd_log_survival])
+    @pytest.mark.parametrize("xi", [0.0, 0.2, -0.2])
+    def test_gpd_below_support_grad_finite(self, fn, xi):
+        """Deep sub-threshold x used to overflow exp(-w) into a NaN gradient in
+        the masked branch (constant below x=0, so the gradient must be 0)."""
+        g = jax.grad(lambda s: fn(-100.0, s, xi))(1.0)
+        assert jnp.isfinite(g)

@@ -50,6 +50,20 @@ def _reduced_exponent(z: Float[Array, ...], u_safe: Float[Array, ...]) -> Array:
     return z * log1p_over_x(u_safe)
 
 
+def _support(shape: Float[Array, ...], z: Float[Array, ...]) -> tuple[Array, Array]:
+    r"""Return ``(valid, u_safe)`` for ``u = ξz`` and the support ``u > -1``.
+
+    ``shape == 0`` (Gumbel) has support on all of ℝ; the explicit guard keeps
+    ``0 · (±inf) = NaN`` from corrupting the mask when ``x`` is ``±inf``, so the
+    Gumbel forms retain their correct extended-real limits. The guard is
+    restricted to that exact case so the ``∂/∂ξ`` gradient at ``ξ = 0`` for
+    finite ``x`` (where ``u = ξz`` has derivative ``z``) is left intact.
+    """
+    u = jnp.where((shape == 0.0) & jnp.isinf(z), 0.0, shape * z)
+    valid = u > -1.0
+    return valid, jnp.where(valid, u, 0.0)
+
+
 def gev_log_prob(
     x: Float[Array, ...],
     loc: Float[Array, ...],
@@ -59,9 +73,7 @@ def gev_log_prob(
     """Log PDF of the Generalized Extreme Value distribution."""
     shape = jnp.asarray(shape)
     z = (x - loc) / scale
-    u = shape * z
-    valid = u > -1.0
-    u_safe = jnp.where(valid, u, 0.0)
+    valid, u_safe = _support(shape, z)
 
     w = _reduced_exponent(z, u_safe)
     log_t = jnp.log1p(u_safe)
@@ -79,9 +91,7 @@ def gev_cdf(
     """CDF of the Generalized Extreme Value distribution."""
     shape = jnp.asarray(shape)
     z = (x - loc) / scale
-    u = shape * z
-    valid = u > -1.0
-    u_safe = jnp.where(valid, u, 0.0)
+    valid, u_safe = _support(shape, z)
 
     w = _reduced_exponent(z, u_safe)
     cdf_inside = jnp.exp(-jnp.exp(-w))
@@ -105,9 +115,7 @@ def gev_survival(
     """
     shape = jnp.asarray(shape)
     z = (x - loc) / scale
-    u = shape * z
-    valid = u > -1.0
-    u_safe = jnp.where(valid, u, 0.0)
+    valid, u_safe = _support(shape, z)
 
     w = _reduced_exponent(z, u_safe)
     s_inside = -jnp.expm1(-jnp.exp(-w))
@@ -127,9 +135,7 @@ def gev_log_survival(
     r"""Log survival function :math:`\log S(x) = \log(1 - F(x))` of the GEV."""
     shape = jnp.asarray(shape)
     z = (x - loc) / scale
-    u = shape * z
-    valid = u > -1.0
-    u_safe = jnp.where(valid, u, 0.0)
+    valid, u_safe = _support(shape, z)
 
     w = _reduced_exponent(z, u_safe)
     ls_inside = jnp.log(-jnp.expm1(-jnp.exp(-w)))
@@ -152,9 +158,22 @@ def _gev_icdf_from_neg_log_q(
     which tends to :math:`\mu - \sigma L` (the Gumbel quantile) as
     :math:`\xi \to 0`, smoothly and with a correct shape gradient.
     """
+    shape = jnp.asarray(shape)
+    neg_log_q = jnp.asarray(neg_log_q)
     log_term = jnp.log(neg_log_q)
     a = -shape * log_term
-    return loc - scale * log_term * expm1_over_x(a)
+    z_std = -log_term * expm1_over_x(a)
+
+    # At the probability endpoints the product above is inf·0 → NaN, so restore
+    # the analytic support endpoints. shape_safe avoids a 0-division in the
+    # branch the outer where discards.
+    shape_safe = jnp.where(shape == 0.0, 1.0, shape)
+    upper = jnp.where(shape < 0.0, -1.0 / shape_safe, jnp.inf)  # q → 1
+    lower = jnp.where(shape > 0.0, -1.0 / shape_safe, -jnp.inf)  # q → 0
+    z_std = jnp.where(neg_log_q == 0.0, upper, z_std)
+    z_std = jnp.where(jnp.isinf(neg_log_q), lower, z_std)
+
+    return loc + scale * z_std
 
 
 def gev_icdf(

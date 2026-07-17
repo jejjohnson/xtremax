@@ -33,6 +33,20 @@ def _reduced_exponent(
     return (x / scale) * log1p_over_x(v_safe)
 
 
+def _support(
+    x: Float[Array, ...], scale: Float[Array, ...], shape: Float[Array, ...]
+) -> tuple[Array, Array]:
+    r"""Return ``(valid, v_safe)`` for ``v = ξx/σ`` and the support ``v > -1``.
+
+    ``shape == 0`` (exponential) has no upper bound; the guard keeps
+    ``0 · (±inf) = NaN`` from corrupting the mask when ``x`` is ``±inf``, and is
+    restricted to that exact case so finite-``x`` shape gradients are intact.
+    """
+    v = jnp.where((shape == 0.0) & jnp.isinf(x), 0.0, shape * x / scale)
+    valid = v > -1.0
+    return valid, jnp.where(valid, v, 0.0)
+
+
 def gpd_log_prob(
     x: Float[Array, ...],
     scale: Float[Array, ...],
@@ -41,9 +55,7 @@ def gpd_log_prob(
     """Log PDF of the Generalized Pareto Distribution (loc = 0)."""
     shape = jnp.asarray(shape)
     x = jnp.asarray(x)
-    v = shape * x / scale
-    valid = v > -1.0
-    v_safe = jnp.where(valid, v, 0.0)
+    valid, v_safe = _support(x, scale, shape)
 
     w = _reduced_exponent(x, scale, v_safe)
     log_t = jnp.log1p(v_safe)
@@ -62,11 +74,13 @@ def gpd_cdf(
     """CDF of the Generalized Pareto Distribution."""
     shape = jnp.asarray(shape)
     x = jnp.asarray(x)
-    v = shape * x / scale
-    valid = v > -1.0
-    v_safe = jnp.where(valid, v, 0.0)
+    # Sanitize the below-support region (x < 0) before the exponential so a
+    # large ``w`` there cannot overflow into a NaN gradient once masked out.
+    below = x < 0.0
+    x_pos = jnp.where(below, 0.0, x)
+    valid, v_safe = _support(x_pos, scale, shape)
 
-    w = _reduced_exponent(x, scale, v_safe)
+    w = _reduced_exponent(x_pos, scale, v_safe)
     # 1 - t^{-1/ξ} = 1 - exp(-w) = -expm1(-w); → 1 - exp(-x/σ) in the limit.
     cdf_inside = -jnp.expm1(-w)
     # Beyond the support, ξ > 0 tails map out-of-support CDF to 0 (lower
@@ -75,7 +89,7 @@ def gpd_cdf(
     boundary = jnp.where(shape < 0, 1.0, 0.0)
     cdf = jnp.where(valid, cdf_inside, boundary)
     # Clamp the universal lower bound (x < 0 is always out of support).
-    return jnp.where(x >= 0.0, cdf, 0.0)
+    return jnp.where(below, 0.0, cdf)
 
 
 def gpd_survival(
@@ -90,17 +104,17 @@ def gpd_survival(
     """
     shape = jnp.asarray(shape)
     x = jnp.asarray(x)
-    v = shape * x / scale
-    valid = v > -1.0
-    v_safe = jnp.where(valid, v, 0.0)
+    below = x < 0.0
+    x_pos = jnp.where(below, 0.0, x)
+    valid, v_safe = _support(x_pos, scale, shape)
 
-    w = _reduced_exponent(x, scale, v_safe)
+    w = _reduced_exponent(x_pos, scale, v_safe)
     s_inside = jnp.exp(-w)
     # Above the finite Weibull-type upper bound (ξ < 0) S = 0; ξ > 0 has no
     # upper bound so `valid` never fails there for x ≥ 0.
     s = jnp.where(valid, s_inside, 0.0)
     # Below x = 0 the exceedance is certain, S = 1.
-    return jnp.where(x >= 0.0, s, 1.0)
+    return jnp.where(below, 1.0, s)
 
 
 def gpd_log_survival(
@@ -115,13 +129,13 @@ def gpd_log_survival(
     """
     shape = jnp.asarray(shape)
     x = jnp.asarray(x)
-    v = shape * x / scale
-    valid = v > -1.0
-    v_safe = jnp.where(valid, v, 0.0)
+    below = x < 0.0
+    x_pos = jnp.where(below, 0.0, x)
+    valid, v_safe = _support(x_pos, scale, shape)
 
-    w = _reduced_exponent(x, scale, v_safe)
+    w = _reduced_exponent(x_pos, scale, v_safe)
     ls = jnp.where(valid, -w, -jnp.inf)
-    return jnp.where(x >= 0.0, ls, 0.0)
+    return jnp.where(below, 0.0, ls)
 
 
 def _gpd_icdf_from_log_exceedance(
@@ -138,8 +152,17 @@ def _gpd_icdf_from_log_exceedance(
     :math:`\xi \to 0`. Taking ``log p`` directly avoids the ``1 - q``
     cancellation that wrecks large return periods.
     """
+    shape = jnp.asarray(shape)
+    log_p = jnp.asarray(log_p)
     a = -shape * log_p
-    return -scale * log_p * expm1_over_x(a)
+    q_val = -scale * log_p * expm1_over_x(a)
+
+    # At q = 1 (log_p = -inf) the product is inf·0 → NaN; restore the upper
+    # endpoint: bounded at -σ/ξ for ξ < 0, otherwise +inf. shape_safe avoids a
+    # 0-division in the branch the outer where discards.
+    shape_safe = jnp.where(shape < 0.0, shape, -1.0)
+    upper = jnp.where(shape < 0.0, -scale / shape_safe, jnp.inf)
+    return jnp.where(jnp.isneginf(log_p), upper, q_val)
 
 
 def gpd_icdf(
