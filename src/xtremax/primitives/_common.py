@@ -82,16 +82,19 @@ def safe_exp_neg_density(w: Float[Array, ...]) -> Array:
     already-saturated CDF / survival output, but wrong for a log density, whose
     ``-exp(-w)`` term *is* the likelihood: capping it early would understate the
     penalty (and drop the dominant gradient) for every observation in the deep
-    tail. Here the value is preserved right up to the representable limit
-    (``w = -log(max)``, saturating at ``max`` instead of ``inf`` beyond it),
-    while the reverse-mode derivative is separately floored via
-    :func:`safe_exp_neg` so the ``exp(-w)·z²`` shape gradient can never overflow
-    to ``0·inf = nan``. ``stop_gradient`` stitches the exact forward value onto
-    the safe gradient.
+    tail. Here the value is preserved right up to the representable limit and
+    saturates at ``finfo.max`` (not ``inf``) beyond it, while the reverse-mode
+    derivative is separately floored via :func:`safe_exp_neg` so the
+    ``exp(-w)·z²`` shape gradient can never overflow to ``0·inf = nan``.
+    ``stop_gradient`` stitches the exact forward value onto the safe gradient.
     """
     w = jnp.asarray(w)
-    log_max = jnp.log(jnp.finfo(w.dtype).max)
-    value = jnp.exp(-jnp.maximum(w, -log_max))
+    max_val = jnp.finfo(w.dtype).max
+    # ``exp(-w)`` overflows to ``inf`` for ``w < -log(max)`` — and even at
+    # exactly ``-log(max)`` the rounded exponent already overflows — so cap the
+    # value at ``finfo.max`` directly. Only the forward value matters here (it
+    # feeds ``stop_gradient``), so the min's kink carries no gradient.
+    value = jnp.minimum(jnp.exp(-w), max_val)
     grad_safe = safe_exp_neg(w)
     return grad_safe + jax.lax.stop_gradient(value - grad_safe)
 
@@ -99,31 +102,43 @@ def safe_exp_neg_density(w: Float[Array, ...]) -> Array:
 def log1p_over_x(u: Float[Array, ...]) -> Float[Array, ...]:
     r"""Stable :math:`\log(1 + u) / u`, with the removable singularity at 0.
 
-    Value and reverse-mode gradient are both finite for every ``u > -1``. The
-    caller must sanitize out-of-support values (``u <= -1``) before calling —
-    ``log1p`` is undefined there.
+    Value and reverse-mode gradient are both finite for every ``u > -1``,
+    including ``u = +inf`` (the limit is 0). A ``+inf`` argument arises when a
+    large finite shape overflows the ``ξz`` product; the caller must still
+    sanitize out-of-support values (``u <= -1``) before calling — ``log1p`` is
+    undefined there.
     """
     u = jnp.asarray(u)
     small = jnp.abs(u) < _SERIES_THRESHOLD
-    # Double-``where`` so neither branch feeds a singular value to autodiff.
-    u_exact = jnp.where(small, 1.0, u)
+    posinf = jnp.isposinf(u)
+    # Double-``where`` so no branch feeds a singular value (0 or +inf) to
+    # autodiff: the small case takes the series, the +inf case takes the limit.
+    u_exact = jnp.where(small | posinf, 1.0, u)
     exact = jnp.log1p(u_exact) / u_exact
     u_series = jnp.where(small, u, 0.0)
     # log1p(u)/u = 1 - u/2 + u²/3 - u³/4 + u⁴/5 - …
     series = 1.0 + u_series * (
         -0.5 + u_series * (1.0 / 3.0 + u_series * (-0.25 + u_series * 0.2))
     )
-    return jnp.where(small, series, exact)
+    result = jnp.where(small, series, exact)
+    return jnp.where(posinf, 0.0, result)  # log1p(u)/u → 0 as u → +inf
 
 
 def expm1_over_x(a: Float[Array, ...]) -> Float[Array, ...]:
     r"""Stable :math:`(\exp(a) - 1) / a`, with the removable singularity at 0.
 
-    Value and reverse-mode gradient are both finite everywhere.
+    Value and reverse-mode gradient are both finite everywhere except at
+    ``a = +inf``, whose extended-real limit is ``+inf`` (returned explicitly).
+    A ``+inf`` argument arises when a large finite shape overflows the exponent
+    of a quantile / return-level expansion; ``a = -inf`` already yields the
+    correct limit 0 without special handling.
     """
     a = jnp.asarray(a)
     small = jnp.abs(a) < _SERIES_THRESHOLD
-    a_exact = jnp.where(small, 1.0, a)
+    posinf = jnp.isposinf(a)
+    # Double-``where`` so no branch feeds a singular value (0 or +inf) to
+    # autodiff before the +inf limit is selected below.
+    a_exact = jnp.where(small | posinf, 1.0, a)
     exact = jnp.expm1(a_exact) / a_exact
     a_series = jnp.where(small, a, 0.0)
     # expm1(a)/a = 1 + a/2 + a²/6 + a³/24 + a⁴/120 + …
@@ -131,4 +146,5 @@ def expm1_over_x(a: Float[Array, ...]) -> Float[Array, ...]:
         0.5
         + a_series * (1.0 / 6.0 + a_series * (1.0 / 24.0 + a_series * (1.0 / 120.0)))
     )
-    return jnp.where(small, series, exact)
+    result = jnp.where(small, series, exact)
+    return jnp.where(posinf, jnp.inf, result)  # expm1(a)/a → +inf as a → +inf

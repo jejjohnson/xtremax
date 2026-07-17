@@ -571,6 +571,35 @@ class TestExtendedRealLimits:
         got = gev_log_prob(jnp.asarray(z), 0.0, 1.0, 0.0)
         assert float(got) == pytest.approx(float(ref), rel=1e-4)
 
+    def test_gumbel_log_density_saturates_finite_past_overflow(self):
+        """Past the exp(-w) overflow point (z=-90, exp(90) > float32 max), the
+        density term must saturate at finfo.max — not inf — so the log density
+        stays a large finite negative rather than collapsing to -inf."""
+        got = gev_log_prob(jnp.asarray(-90.0), 0.0, 1.0, 0.0)
+        assert jnp.isfinite(got)
+        assert float(got) < 0.0
+
+    @pytest.mark.parametrize("fn", [gev_return_level, gpd_return_level])
+    def test_huge_shape_return_level_is_inf_not_nan(self, fn):
+        """A huge shape overflows the quantile exponent; expm1_over_x(+inf) must
+        yield the +inf tail quantile rather than inf/inf = NaN."""
+        args = (10.0, 0.0, 1.0, 2e38) if fn is gev_return_level else (10.0, 1.0, 2e38)
+        assert jnp.isposinf(fn(*args))
+
+    @pytest.mark.parametrize("fn", [gev_cdf, gev_survival, gpd_cdf, gpd_survival])
+    def test_huge_shape_cdf_survival_not_nan(self, fn):
+        """A huge shape overflows ξ·z even after z is clamped; log1p_over_x(+inf)
+        must fall back to its 0 limit so the bounded CDF / survival stays finite
+        in [0, 1] instead of NaN."""
+        args = (
+            (10.0, 0.0, 1e-38, 1e20)
+            if fn in (gev_cdf, gev_survival)
+            else (10.0, 1e-38, 1e20)
+        )
+        out = fn(*args)
+        assert jnp.isfinite(out)
+        assert 0.0 <= float(out) <= 1.0
+
     @pytest.mark.parametrize("fn", [gev_cdf, gev_survival, gpd_cdf, gpd_survival])
     def test_tiny_scale_cdf_survival_finite(self, fn):
         """A finite observation with a tiny (even subnormal) scale overflows the
