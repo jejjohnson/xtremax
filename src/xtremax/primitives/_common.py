@@ -41,19 +41,22 @@ def clamped_standardize(
       division. Callers override the value for ``±inf`` via their own
       extended-real limit; sanitizing the input here means a ``±inf`` never
       forms an ``inf / scale²`` term in the reverse-mode gradient.
-    - The ratio is clipped to ``±sqrt(max)`` afterwards. A tiny (even
-      subnormal) ``scale`` sends the raw ratio to ``±inf``, which would poison
-      ``ξz`` and ``log1p(ξz)/ξ`` with a ``nan``; ``sqrt(max)`` is loose enough
-      that both ``z`` and ``z²`` (the latter appears in the shape gradient) stay
-      representable, and sits far beyond any real standardized value, so genuine
-      heavy (Fréchet) upper tails are returned untouched. The deep-tail
-      ``exp(-w)`` overflow is handled separately by :func:`safe_exp_neg`.
+    - The forward value is clipped only against genuine overflow (``±inf`` from
+      a tiny / subnormal ``scale`` becomes ``±finfo.max``); every representable
+      ratio is returned exactly, so a large finite standardized value is not
+      distorted. The reverse-mode gradient is additionally clipped to
+      ``±sqrt(max)`` so ``z²`` (which appears in the shape gradient) stays
+      representable; ``stop_gradient`` stitches the exact value onto the
+      gradient-safe branch. The deep-tail ``exp(-w)`` overflow is handled
+      separately by :func:`safe_exp_neg`.
     """
     x = jnp.asarray(x)
     x_safe = jnp.where(jnp.isfinite(x), x, loc)
     z = (x_safe - loc) / scale
-    z_max = jnp.sqrt(jnp.finfo(z.dtype).max)
-    return jnp.clip(z, -z_max, z_max)
+    max_val = jnp.finfo(z.dtype).max
+    value = jnp.clip(z, -max_val, max_val)  # only ±inf is squeezed, to ±max
+    z_grad = jnp.clip(z, -jnp.sqrt(max_val), jnp.sqrt(max_val))  # z² stays finite
+    return z_grad + jax.lax.stop_gradient(value - z_grad)
 
 
 def safe_exp_neg(w: Float[Array, ...]) -> Array:

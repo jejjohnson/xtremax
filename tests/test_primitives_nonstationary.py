@@ -260,6 +260,14 @@ class TestSpatial:
         g = jax.grad(lambda c: pairwise_distances(c).sum())(coords)
         assert jnp.all(jnp.isfinite(g))
 
+    def test_pairwise_distances_propagates_nan_coord(self):
+        """A NaN coordinate must surface as NaN distances, not be masked to a
+        zero (coincident) distance that fakes a perfect correlation."""
+        coords = jnp.array([[0.0, 0.0], [1.0, 0.0], [jnp.nan, 0.0]])
+        d = pairwise_distances(coords)
+        assert jnp.isnan(d[2, 0]) and jnp.isnan(d[0, 2])
+        assert float(d[0, 1]) == pytest.approx(1.0)  # valid pair unaffected
+
     def test_design_matrix(self):
         cov = jnp.array([[1.0, 2.0], [3.0, 4.0]])
         x = design_matrix(cov)

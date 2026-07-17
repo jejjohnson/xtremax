@@ -622,6 +622,15 @@ class TestExtendedRealLimits:
         args = (10.0, 0.0, 1e-38, 0.2) if fn is gev_log_prob else (10.0, 1e-38, 0.2)
         assert not jnp.isnan(fn(*args))
 
+    def test_large_representable_standardized_value_not_clipped(self):
+        """The overflow guard must clip only genuinely non-finite ratios, not
+        representable-but-large ones: x/σ = 1e20 is finite in float32, so
+        gpd_survival(1e20, 1, 10) must equal (1 + 10·1e20)^-0.1 ≈ 0.00794,
+        not a distorted value from a prematurely clipped standardization."""
+        got = gpd_survival(jnp.asarray(1e20), 1.0, 10.0)
+        ref = (1.0 + 10.0 * 1e20) ** (-1.0 / 10.0)
+        assert float(got) == pytest.approx(ref, rel=1e-4)
+
     @pytest.mark.parametrize(
         "fn, args",
         [

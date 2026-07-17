@@ -38,7 +38,11 @@ def pairwise_distances(coords: Float[Array, ...]) -> Float[Array, ...]:
     # the exact zero diagonal — value and gradient are both finite.
     sq = jnp.sum(deltas**2, axis=-1)
     positive = sq > 0.0
-    return jnp.where(positive, jnp.sqrt(jnp.where(positive, sq, 1.0)), 0.0)
+    dist = jnp.where(positive, jnp.sqrt(jnp.where(positive, sq, 1.0)), 0.0)
+    # A NaN coordinate makes its squared distances NaN, which ``sq > 0`` reads as
+    # False — masking it to a zero (coincident) distance and hiding the bad
+    # input. Propagate the NaN instead of collapsing it onto the diagonal.
+    return jnp.where(jnp.isnan(sq), jnp.nan, dist)
 
 
 def design_matrix(covariates: Float[Array, ...]) -> Float[Array, ...]:
