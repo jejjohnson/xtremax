@@ -39,7 +39,9 @@ _ZETA4_4 = 0.2705808084277845  # ζ(4)/4 = π⁴/360
 _MEAN_SERIES_THRESHOLD = 2e-2
 
 
-def _reduced_exponent(z: Float[Array, ...], u_safe: Float[Array, ...]) -> Array:
+def _reduced_exponent(
+    shape: Float[Array, ...], z: Float[Array, ...], u_safe: Float[Array, ...]
+) -> Array:
     r"""Return :math:`w = \log(1 + \xi z)/\xi = z \cdot \mathrm{log1p\_over\_x}(u)`.
 
     ``t^{-1/ξ} = exp(-w)`` and ``(1/ξ + 1) log(1 + ξz) = w + log1p(u)``, so the
@@ -47,7 +49,10 @@ def _reduced_exponent(z: Float[Array, ...], u_safe: Float[Array, ...]) -> Array:
     ``ξ`` — which is what keeps the Gumbel limit smooth. ``u_safe`` must already
     be masked to ``> -1``.
     """
-    return z * log1p_over_x(u_safe)
+    w = z * log1p_over_x(u_safe)
+    # At the unbounded in-support tail (u = +inf) the product is inf·0 = NaN;
+    # the limit is w = log1p(u)/ξ = sign(ξ)·inf.
+    return jnp.where(jnp.isposinf(u_safe), jnp.sign(shape) * jnp.inf, w)
 
 
 def _support(shape: Float[Array, ...], z: Float[Array, ...]) -> tuple[Array, Array]:
@@ -75,7 +80,7 @@ def gev_log_prob(
     z = (x - loc) / scale
     valid, u_safe = _support(shape, z)
 
-    w = _reduced_exponent(z, u_safe)
+    w = _reduced_exponent(shape, z, u_safe)
     log_t = jnp.log1p(u_safe)
     log_pdf = -jnp.log(scale) - (w + log_t) - jnp.exp(-w)
 
@@ -93,7 +98,7 @@ def gev_cdf(
     z = (x - loc) / scale
     valid, u_safe = _support(shape, z)
 
-    w = _reduced_exponent(z, u_safe)
+    w = _reduced_exponent(shape, z, u_safe)
     cdf_inside = jnp.exp(-jnp.exp(-w))
     # Fréchet tails (ξ > 0) map out-of-support to 0; Weibull tails to 1.
     boundary = jnp.where(shape > 0, 0.0, 1.0)
@@ -117,7 +122,7 @@ def gev_survival(
     z = (x - loc) / scale
     valid, u_safe = _support(shape, z)
 
-    w = _reduced_exponent(z, u_safe)
+    w = _reduced_exponent(shape, z, u_safe)
     s_inside = -jnp.expm1(-jnp.exp(-w))
     # Below the Fréchet (ξ > 0) lower endpoint S = 1; above the Weibull
     # (ξ < 0) upper endpoint S = 0.
@@ -137,7 +142,7 @@ def gev_log_survival(
     z = (x - loc) / scale
     valid, u_safe = _support(shape, z)
 
-    w = _reduced_exponent(z, u_safe)
+    w = _reduced_exponent(shape, z, u_safe)
     ls_inside = jnp.log(-jnp.expm1(-jnp.exp(-w)))
     boundary = jnp.where(shape > 0, 0.0, -jnp.inf)
 
@@ -160,18 +165,22 @@ def _gev_icdf_from_neg_log_q(
     """
     shape = jnp.asarray(shape)
     neg_log_q = jnp.asarray(neg_log_q)
-    log_term = jnp.log(neg_log_q)
+    at_upper = neg_log_q == 0.0  # q = 1
+    at_lower = jnp.isposinf(neg_log_q)  # q = 0 (only +inf; -inf is invalid q)
+
+    # Sanitize the endpoint inputs so the interior product is finite there —
+    # both its value and the reverse-mode gradient of the discarded branch —
+    # before the analytic support endpoints are selected below.
+    safe = jnp.where(at_upper | at_lower, 1.0, neg_log_q)
+    log_term = jnp.log(safe)
     a = -shape * log_term
     z_std = -log_term * expm1_over_x(a)
 
-    # At the probability endpoints the product above is inf·0 → NaN, so restore
-    # the analytic support endpoints. shape_safe avoids a 0-division in the
-    # branch the outer where discards.
     shape_safe = jnp.where(shape == 0.0, 1.0, shape)
     upper = jnp.where(shape < 0.0, -1.0 / shape_safe, jnp.inf)  # q → 1
     lower = jnp.where(shape > 0.0, -1.0 / shape_safe, -jnp.inf)  # q → 0
-    z_std = jnp.where(neg_log_q == 0.0, upper, z_std)
-    z_std = jnp.where(jnp.isinf(neg_log_q), lower, z_std)
+    z_std = jnp.where(at_upper, upper, z_std)
+    z_std = jnp.where(at_lower, lower, z_std)
 
     return loc + scale * z_std
 

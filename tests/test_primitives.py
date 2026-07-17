@@ -458,3 +458,39 @@ class TestExtendedRealLimits:
         the masked branch (constant below x=0, so the gradient must be 0)."""
         g = jax.grad(lambda s: fn(-100.0, s, xi))(1.0)
         assert jnp.isfinite(g)
+
+    @pytest.mark.parametrize(
+        "x, xi, expected",
+        [
+            (INF, 0.2, 1.0),  # Fréchet unbounded above
+            (-INF, -0.2, 0.0),  # Weibull unbounded below
+            (-INF, 0.2, 0.0),  # below Fréchet lower endpoint
+            (INF, -0.2, 1.0),  # above Weibull upper endpoint
+        ],
+    )
+    def test_gev_cdf_at_infinity_nonzero_shape(self, x, xi, expected):
+        """log1p(u)/u is inf/inf=NaN at the unbounded tail; the w-limit override
+        must restore the analytic 0/1 cdf for nonzero shape too."""
+        assert float(gev_cdf(x, 0.0, 1.0, xi)) == expected
+
+    def test_gpd_cdf_survival_at_infinity_nonzero_shape(self):
+        assert float(gpd_cdf(self.INF, 1.0, 0.2)) == 1.0
+        assert float(gpd_survival(self.INF, 1.0, 0.2)) == 0.0
+
+    def test_gev_icdf_invalid_probability_is_nan(self):
+        """q=+inf (invalid) must stay NaN, not be treated as the q=0 endpoint."""
+        assert jnp.isnan(gev_icdf(self.INF, 0.0, 1.0, 0.2))
+
+    @pytest.mark.parametrize("xi", [-0.2, -0.5])
+    def test_gev_icdf_endpoint_grad_finite_and_correct(self, xi):
+        """The discarded inf·0 endpoint branch must not poison the endpoint
+        gradient: d/dσ (loc - σ/ξ) = -1/ξ, d/dξ = 1/ξ²."""
+        g_scale = float(jax.grad(lambda s: gev_icdf(1.0, 0.0, s, xi))(1.0))
+        g_shape = float(jax.grad(lambda z: gev_icdf(1.0, 0.0, 1.0, z))(xi))
+        assert g_scale == pytest.approx(-1.0 / xi, rel=1e-4)
+        assert g_shape == pytest.approx(1.0 / xi**2, rel=1e-4)
+
+    def test_gpd_icdf_endpoint_grad_finite(self):
+        g = jax.grad(lambda s: gpd_icdf(1.0, s, -0.3))(1.0)
+        assert jnp.isfinite(g)
+        assert float(g) == pytest.approx(1.0 / 0.3, rel=1e-4)

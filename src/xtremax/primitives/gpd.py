@@ -23,14 +23,20 @@ from xtremax.primitives._common import expm1_over_x, log1p_over_x
 
 
 def _reduced_exponent(
-    x: Float[Array, ...], scale: Float[Array, ...], v_safe: Float[Array, ...]
+    shape: Float[Array, ...],
+    x: Float[Array, ...],
+    scale: Float[Array, ...],
+    v_safe: Float[Array, ...],
 ) -> Array:
     r"""Return :math:`w = \log(1 + \xi x/\sigma)/\xi`, so ``t^{-1/ξ} = exp(-w)``.
 
     ``v_safe = ξ x/σ`` must already be masked to ``> -1``. As ``ξ → 0`` this
     tends to ``x/σ`` (the exponential rate term), smoothly.
     """
-    return (x / scale) * log1p_over_x(v_safe)
+    w = (x / scale) * log1p_over_x(v_safe)
+    # At the unbounded in-support tail (v = +inf) the product is inf·0 = NaN;
+    # the limit is w = log1p(v)/ξ = sign(ξ)·inf.
+    return jnp.where(jnp.isposinf(v_safe), jnp.sign(shape) * jnp.inf, w)
 
 
 def _support(
@@ -57,7 +63,7 @@ def gpd_log_prob(
     x = jnp.asarray(x)
     valid, v_safe = _support(x, scale, shape)
 
-    w = _reduced_exponent(x, scale, v_safe)
+    w = _reduced_exponent(shape, x, scale, v_safe)
     log_t = jnp.log1p(v_safe)
     # -log σ - (1/ξ + 1) log(1 + ξx/σ) = -log σ - (w + log_t); → -log σ - x/σ.
     log_pdf = -jnp.log(scale) - (w + log_t)
@@ -80,7 +86,7 @@ def gpd_cdf(
     x_pos = jnp.where(below, 0.0, x)
     valid, v_safe = _support(x_pos, scale, shape)
 
-    w = _reduced_exponent(x_pos, scale, v_safe)
+    w = _reduced_exponent(shape, x_pos, scale, v_safe)
     # 1 - t^{-1/ξ} = 1 - exp(-w) = -expm1(-w); → 1 - exp(-x/σ) in the limit.
     cdf_inside = -jnp.expm1(-w)
     # Beyond the support, ξ > 0 tails map out-of-support CDF to 0 (lower
@@ -108,7 +114,7 @@ def gpd_survival(
     x_pos = jnp.where(below, 0.0, x)
     valid, v_safe = _support(x_pos, scale, shape)
 
-    w = _reduced_exponent(x_pos, scale, v_safe)
+    w = _reduced_exponent(shape, x_pos, scale, v_safe)
     s_inside = jnp.exp(-w)
     # Above the finite Weibull-type upper bound (ξ < 0) S = 0; ξ > 0 has no
     # upper bound so `valid` never fails there for x ≥ 0.
@@ -133,7 +139,7 @@ def gpd_log_survival(
     x_pos = jnp.where(below, 0.0, x)
     valid, v_safe = _support(x_pos, scale, shape)
 
-    w = _reduced_exponent(x_pos, scale, v_safe)
+    w = _reduced_exponent(shape, x_pos, scale, v_safe)
     ls = jnp.where(valid, -w, -jnp.inf)
     return jnp.where(below, 0.0, ls)
 
@@ -154,15 +160,20 @@ def _gpd_icdf_from_log_exceedance(
     """
     shape = jnp.asarray(shape)
     log_p = jnp.asarray(log_p)
-    a = -shape * log_p
-    q_val = -scale * log_p * expm1_over_x(a)
+    at_upper = jnp.isneginf(log_p)  # q = 1
 
-    # At q = 1 (log_p = -inf) the product is inf·0 → NaN; restore the upper
-    # endpoint: bounded at -σ/ξ for ξ < 0, otherwise +inf. shape_safe avoids a
-    # 0-division in the branch the outer where discards.
+    # Sanitize the endpoint input so the interior product is finite there — both
+    # its value and the reverse-mode gradient of the discarded branch — before
+    # the analytic upper endpoint is selected below.
+    safe = jnp.where(at_upper, -1.0, log_p)
+    a = -shape * safe
+    q_val = -scale * safe * expm1_over_x(a)
+
+    # Upper endpoint: bounded at -σ/ξ for ξ < 0, otherwise +inf. shape_safe
+    # avoids a 0-division in the branch the outer where discards.
     shape_safe = jnp.where(shape < 0.0, shape, -1.0)
     upper = jnp.where(shape < 0.0, -scale / shape_safe, jnp.inf)
-    return jnp.where(jnp.isneginf(log_p), upper, q_val)
+    return jnp.where(at_upper, upper, q_val)
 
 
 def gpd_icdf(

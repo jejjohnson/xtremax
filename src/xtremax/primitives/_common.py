@@ -45,7 +45,10 @@ def log1p_over_x(u: Float[Array, ...]) -> Float[Array, ...]:
     series = 1.0 + u_series * (
         -0.5 + u_series * (1.0 / 3.0 + u_series * (-0.25 + u_series * 0.2))
     )
-    return jnp.where(small, series, exact)
+    result = jnp.where(small, series, exact)
+    # log1p(u)/u → 0 as u → +inf (the unbounded in-support tail); the raw
+    # quotient is inf/inf = NaN there.
+    return jnp.where(jnp.isposinf(u), 0.0, result)
 
 
 def expm1_over_x(a: Float[Array, ...]) -> Float[Array, ...]:
