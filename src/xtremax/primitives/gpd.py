@@ -23,20 +23,20 @@ from xtremax.primitives._common import expm1_over_x, log1p_over_x
 
 
 def _reduced_exponent(
-    shape: Float[Array, ...],
     x: Float[Array, ...],
     scale: Float[Array, ...],
     v_safe: Float[Array, ...],
+    valid: Array,
 ) -> Array:
     r"""Return :math:`w = \log(1 + \xi x/\sigma)/\xi`, so ``t^{-1/ξ} = exp(-w)``.
 
     ``v_safe = ξ x/σ`` must already be masked to ``> -1``. As ``ξ → 0`` this
     tends to ``x/σ`` (the exponential rate term), smoothly.
     """
-    w = (x / scale) * log1p_over_x(v_safe)
-    # At the unbounded in-support tail (v = +inf) the product is inf·0 = NaN;
-    # the limit is w = log1p(v)/ξ = sign(ξ)·inf.
-    return jnp.where(jnp.isposinf(v_safe), jnp.sign(shape) * jnp.inf, w)
+    # Out-of-support points carry a large ``x``; zero it so the downstream
+    # ``exp(-w)`` cannot overflow into a NaN gradient in the discarded branch.
+    x_safe = jnp.where(valid, x, 0.0)
+    return (x_safe / scale) * log1p_over_x(v_safe)
 
 
 def _support(
@@ -44,11 +44,10 @@ def _support(
 ) -> tuple[Array, Array]:
     r"""Return ``(valid, v_safe)`` for ``v = ξx/σ`` and the support ``v > -1``.
 
-    ``shape == 0`` (exponential) has no upper bound; the guard keeps
-    ``0 · (±inf) = NaN`` from corrupting the mask when ``x`` is ``±inf``, and is
-    restricted to that exact case so finite-``x`` shape gradients are intact.
+    Callers pass a finite in-support ``x`` (``x < 0`` and ``x = +inf`` are handled
+    by each public function), so ``v = ξx/σ`` is always finite here.
     """
-    v = jnp.where((shape == 0.0) & jnp.isinf(x), 0.0, shape * x / scale)
+    v = shape * x / scale
     valid = v > -1.0
     return valid, jnp.where(valid, v, 0.0)
 
@@ -61,14 +60,17 @@ def gpd_log_prob(
     """Log PDF of the Generalized Pareto Distribution (loc = 0)."""
     shape = jnp.asarray(shape)
     x = jnp.asarray(x)
-    valid, v_safe = _support(x, scale, shape)
+    finite = jnp.isfinite(x)
+    x_calc = jnp.where(finite, x, 0.0)
+    valid, v_safe = _support(x_calc, scale, shape)
 
-    w = _reduced_exponent(shape, x, scale, v_safe)
+    w = _reduced_exponent(x_calc, scale, v_safe, valid)
     log_t = jnp.log1p(v_safe)
     # -log σ - (1/ξ + 1) log(1 + ξx/σ) = -log σ - (w + log_t); → -log σ - x/σ.
     log_pdf = -jnp.log(scale) - (w + log_t)
 
-    in_support = (x >= 0.0) & valid
+    # Density vanishes at x = ±inf.
+    in_support = (x >= 0.0) & valid & finite
     return jnp.where(in_support, log_pdf, -jnp.inf)
 
 
@@ -80,13 +82,15 @@ def gpd_cdf(
     """CDF of the Generalized Pareto Distribution."""
     shape = jnp.asarray(shape)
     x = jnp.asarray(x)
-    # Sanitize the below-support region (x < 0) before the exponential so a
-    # large ``w`` there cannot overflow into a NaN gradient once masked out.
+    # x < 0 (incl. -inf) is below support; x = +inf is the unbounded tail. Both
+    # get a finite in-support surrogate so no overflowing / parameter-dependent
+    # inf reaches the kernel, then are overridden with their limits below.
     below = x < 0.0
-    x_pos = jnp.where(below, 0.0, x)
-    valid, v_safe = _support(x_pos, scale, shape)
+    posinf = jnp.isposinf(x)
+    x_calc = jnp.where(below | posinf, 0.0, x)
+    valid, v_safe = _support(x_calc, scale, shape)
 
-    w = _reduced_exponent(shape, x_pos, scale, v_safe)
+    w = _reduced_exponent(x_calc, scale, v_safe, valid)
     # 1 - t^{-1/ξ} = 1 - exp(-w) = -expm1(-w); → 1 - exp(-x/σ) in the limit.
     cdf_inside = -jnp.expm1(-w)
     # Beyond the support, ξ > 0 tails map out-of-support CDF to 0 (lower
@@ -94,7 +98,8 @@ def gpd_cdf(
     # endpoint x = -σ/ξ where 1 + ξx/σ = 0 exactly).
     boundary = jnp.where(shape < 0, 1.0, 0.0)
     cdf = jnp.where(valid, cdf_inside, boundary)
-    # Clamp the universal lower bound (x < 0 is always out of support).
+    cdf = jnp.where(posinf, 1.0, cdf)  # F(+inf) = 1
+    # Clamp the universal lower bound (x < 0, incl. -inf, is out of support).
     return jnp.where(below, 0.0, cdf)
 
 
@@ -111,15 +116,17 @@ def gpd_survival(
     shape = jnp.asarray(shape)
     x = jnp.asarray(x)
     below = x < 0.0
-    x_pos = jnp.where(below, 0.0, x)
-    valid, v_safe = _support(x_pos, scale, shape)
+    posinf = jnp.isposinf(x)
+    x_calc = jnp.where(below | posinf, 0.0, x)
+    valid, v_safe = _support(x_calc, scale, shape)
 
-    w = _reduced_exponent(shape, x_pos, scale, v_safe)
+    w = _reduced_exponent(x_calc, scale, v_safe, valid)
     s_inside = jnp.exp(-w)
     # Above the finite Weibull-type upper bound (ξ < 0) S = 0; ξ > 0 has no
     # upper bound so `valid` never fails there for x ≥ 0.
     s = jnp.where(valid, s_inside, 0.0)
-    # Below x = 0 the exceedance is certain, S = 1.
+    s = jnp.where(posinf, 0.0, s)  # S(+inf) = 0
+    # Below x = 0 (incl. -inf) the exceedance is certain, S = 1.
     return jnp.where(below, 1.0, s)
 
 
@@ -136,11 +143,13 @@ def gpd_log_survival(
     shape = jnp.asarray(shape)
     x = jnp.asarray(x)
     below = x < 0.0
-    x_pos = jnp.where(below, 0.0, x)
-    valid, v_safe = _support(x_pos, scale, shape)
+    posinf = jnp.isposinf(x)
+    x_calc = jnp.where(below | posinf, 0.0, x)
+    valid, v_safe = _support(x_calc, scale, shape)
 
-    w = _reduced_exponent(shape, x_pos, scale, v_safe)
+    w = _reduced_exponent(x_calc, scale, v_safe, valid)
     ls = jnp.where(valid, -w, -jnp.inf)
+    ls = jnp.where(posinf, -jnp.inf, ls)  # log S(+inf) = -inf
     return jnp.where(below, 0.0, ls)
 
 

@@ -266,6 +266,19 @@ class TestClassPrimitiveParity:
         d = GeneralizedParetoDistribution(scale=1.0, shape=0.2)
         assert jnp.allclose(d.log_prob(x), gpd_log_prob(x, 1.0, 0.2))
 
+    def test_gpd_survival_delegates_to_primitive(self, x):
+        """Class survival / cumulative-hazard must match the stable primitives
+        (incl. the small-ξ band), not the old threshold-based branches."""
+        from xtremax import GeneralizedParetoDistribution
+
+        for xi in (0.2, 5e-8, -0.2):
+            d = GeneralizedParetoDistribution(scale=1.0, concentration=xi)
+            assert jnp.allclose(d.survival_function(x), gpd_survival(x, 1.0, xi))
+            assert jnp.allclose(d.exceedance_probability(x), gpd_survival(x, 1.0, xi))
+            assert jnp.allclose(
+                d.cumulative_hazard_rate(x), -gpd_log_survival(x, 1.0, xi)
+            )
+
     def test_frechet_log_prob_parity(self, x):
         from xtremax import FrechetType2GEVD
 
@@ -494,3 +507,30 @@ class TestExtendedRealLimits:
         g = jax.grad(lambda s: gpd_icdf(1.0, s, -0.3))(1.0)
         assert jnp.isfinite(g)
         assert float(g) == pytest.approx(1.0 / 0.3, rel=1e-4)
+
+    @pytest.mark.parametrize(
+        "fn", [gev_log_prob, gev_cdf, gev_survival, gev_log_survival]
+    )
+    @pytest.mark.parametrize("x, xi", [(-100.0, 0.2), (100.0, -0.2)])
+    def test_gev_out_of_support_grad_finite(self, fn, x, xi):
+        """A finite observation outside the parameter-dependent support must not
+        overflow exp(-w) into a NaN parameter gradient (breaks fitting when a
+        proposed parameter excludes a data point)."""
+        for argnums in (2, 3):  # scale, shape
+            g = jax.grad(fn, argnums=argnums)(jnp.asarray(x), 0.0, 1.0, xi)
+            assert jnp.isfinite(g)
+
+    @pytest.mark.parametrize("fn", [gev_cdf, gev_survival, gev_log_survival])
+    @pytest.mark.parametrize("x", [INF, -INF])
+    def test_gev_infinity_grad_finite(self, fn, x):
+        """Differentiating at x=±inf must give the (zero) gradient of the
+        constant extended-real limit, not a 0·inf NaN."""
+        for argnums in (2, 3):
+            g = jax.grad(fn, argnums=argnums)(jnp.asarray(x), 0.0, 1.0, 0.2)
+            assert jnp.isfinite(g)
+
+    @pytest.mark.parametrize("fn", [gpd_cdf, gpd_survival, gpd_log_survival])
+    def test_gpd_infinity_grad_finite(self, fn):
+        for argnums in (1, 2):  # scale, shape
+            g = jax.grad(fn, argnums=argnums)(jnp.asarray(self.INF), 1.0, 0.2)
+            assert jnp.isfinite(g)

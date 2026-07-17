@@ -28,7 +28,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from xtremax.primitives.gev import gev_icdf, gev_survival
+from xtremax.primitives.gev import gev_return_level, gev_survival
 
 
 # Hard cap on geometric upper-bracket growth so the solve always terminates
@@ -270,7 +270,10 @@ def nonstationary_return_level(
     shape = jnp.asarray(shape)
 
     if time_axis is None:
-        return gev_icdf(1.0 - 1.0 / return_period, loc, scale, shape)
+        # Route through the stable return-level path (parameterized by
+        # -log1p(-1/T)) so large periods do not lose precision to the
+        # 1 - 1/T rounding that a direct gev_icdf(1 - 1/T) would incur.
+        return gev_return_level(return_period, loc, scale, shape)
 
     n_blocks = loc.shape[time_axis]
     target = n_blocks / return_period

@@ -88,6 +88,7 @@ class TestSurvival:
         """`1 - cdf` cancels to 0 in the deep tail; `gev_survival` does not."""
         from jax import config
 
+        prior_x64 = config.read("jax_enable_x64")
         config.update("jax_enable_x64", True)
         try:
             x = jnp.asarray(40.0, dtype=jnp.float64)  # Gumbel, S ~ e^-40 ~ 4e-18
@@ -98,7 +99,9 @@ class TestSurvival:
             # The naive form has lost all precision (rounds to exactly 0).
             assert float(naive) == 0.0
         finally:
-            config.update("jax_enable_x64", False)
+            # Restore the prior setting rather than forcing float32, so a suite
+            # run under JAX_ENABLE_X64=1 is not silently downgraded afterward.
+            config.update("jax_enable_x64", prior_x64)
 
     def test_out_of_support_boundaries(self):
         # Fréchet (ξ>0): below lower endpoint S = 1.
@@ -204,6 +207,14 @@ class TestNonStationary:
         out = fn(20.0)
         assert out.shape == (loc.shape[1],)
         assert jnp.all(jnp.isfinite(out))
+
+    def test_stationary_large_period_uses_stable_path(self):
+        """Stationary mode must route through the stable return-level path so a
+        large period does not round ``1 - 1/T`` to 1 (returning an endpoint)."""
+        period = float(2**25)
+        stat = nonstationary_return_level(period, 0.0, 1.0, 0.1, time_axis=None)
+        assert jnp.isfinite(stat)
+        assert jnp.allclose(stat, gev_return_level(period, 0.0, 1.0, 0.1), rtol=1e-6)
 
     def test_reverse_mode_grad_matches_finite_difference(self):
         """The non-stationary solve is reverse-mode differentiable via the

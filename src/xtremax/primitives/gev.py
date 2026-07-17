@@ -40,7 +40,7 @@ _MEAN_SERIES_THRESHOLD = 2e-2
 
 
 def _reduced_exponent(
-    shape: Float[Array, ...], z: Float[Array, ...], u_safe: Float[Array, ...]
+    z: Float[Array, ...], u_safe: Float[Array, ...], valid: Array
 ) -> Array:
     r"""Return :math:`w = \log(1 + \xi z)/\xi = z \cdot \mathrm{log1p\_over\_x}(u)`.
 
@@ -49,24 +49,31 @@ def _reduced_exponent(
     ``ξ`` — which is what keeps the Gumbel limit smooth. ``u_safe`` must already
     be masked to ``> -1``.
     """
-    w = z * log1p_over_x(u_safe)
-    # At the unbounded in-support tail (u = +inf) the product is inf·0 = NaN;
-    # the limit is w = log1p(u)/ξ = sign(ξ)·inf.
-    return jnp.where(jnp.isposinf(u_safe), jnp.sign(shape) * jnp.inf, w)
+    # Out-of-support points carry a large ``|z|``; zero it so the downstream
+    # ``exp(-w)`` cannot overflow into a NaN gradient in the discarded branch.
+    z_safe = jnp.where(valid, z, 0.0)
+    return z_safe * log1p_over_x(u_safe)
 
 
 def _support(shape: Float[Array, ...], z: Float[Array, ...]) -> tuple[Array, Array]:
     r"""Return ``(valid, u_safe)`` for ``u = ξz`` and the support ``u > -1``.
 
-    ``shape == 0`` (Gumbel) has support on all of ℝ; the explicit guard keeps
-    ``0 · (±inf) = NaN`` from corrupting the mask when ``x`` is ``±inf``, so the
-    Gumbel forms retain their correct extended-real limits. The guard is
-    restricted to that exact case so the ``∂/∂ξ`` gradient at ``ξ = 0`` for
-    finite ``x`` (where ``u = ξz`` has derivative ``z``) is left intact.
+    Callers pass a finite ``z`` (``±inf`` inputs are handled by the extended-real
+    override in each public function), so ``u = ξz`` is always finite here.
     """
-    u = jnp.where((shape == 0.0) & jnp.isinf(z), 0.0, shape * z)
+    u = shape * z
     valid = u > -1.0
     return valid, jnp.where(valid, u, 0.0)
+
+
+def _finite_z(x: Array, loc: Float[Array, ...], scale: Float[Array, ...]) -> Array:
+    r"""``(x - loc)/scale`` with ``±inf`` inputs mapped to the in-support ``z=0``.
+
+    Keeping ``z`` finite means an ``x = ±inf`` input never forms a
+    parameter-dependent ``±inf`` (whose ``0·inf`` gradient would be NaN); the
+    public functions overwrite those positions with the analytic limit.
+    """
+    return (jnp.where(jnp.isinf(x), loc, x) - loc) / scale
 
 
 def gev_log_prob(
@@ -77,14 +84,16 @@ def gev_log_prob(
 ) -> Float[Array, ...]:
     """Log PDF of the Generalized Extreme Value distribution."""
     shape = jnp.asarray(shape)
-    z = (x - loc) / scale
+    x = jnp.asarray(x)
+    z = _finite_z(x, loc, scale)
     valid, u_safe = _support(shape, z)
 
-    w = _reduced_exponent(shape, z, u_safe)
+    w = _reduced_exponent(z, u_safe, valid)
     log_t = jnp.log1p(u_safe)
     log_pdf = -jnp.log(scale) - (w + log_t) - jnp.exp(-w)
 
-    return jnp.where(valid, log_pdf, -jnp.inf)
+    # Density vanishes at x = ±inf.
+    return jnp.where(jnp.isfinite(x) & valid, log_pdf, -jnp.inf)
 
 
 def gev_cdf(
@@ -95,15 +104,18 @@ def gev_cdf(
 ) -> Float[Array, ...]:
     """CDF of the Generalized Extreme Value distribution."""
     shape = jnp.asarray(shape)
-    z = (x - loc) / scale
+    x = jnp.asarray(x)
+    z = _finite_z(x, loc, scale)
     valid, u_safe = _support(shape, z)
 
-    w = _reduced_exponent(shape, z, u_safe)
+    w = _reduced_exponent(z, u_safe, valid)
     cdf_inside = jnp.exp(-jnp.exp(-w))
     # Fréchet tails (ξ > 0) map out-of-support to 0; Weibull tails to 1.
     boundary = jnp.where(shape > 0, 0.0, 1.0)
+    cdf = jnp.where(valid, cdf_inside, boundary)
 
-    return jnp.where(valid, cdf_inside, boundary)
+    # Extended-real limits F(-inf) = 0, F(+inf) = 1.
+    return jnp.where(jnp.isinf(x), jnp.where(x > 0, 1.0, 0.0), cdf)
 
 
 def gev_survival(
@@ -119,16 +131,19 @@ def gev_survival(
     instead of cancelling against 1.0.
     """
     shape = jnp.asarray(shape)
-    z = (x - loc) / scale
+    x = jnp.asarray(x)
+    z = _finite_z(x, loc, scale)
     valid, u_safe = _support(shape, z)
 
-    w = _reduced_exponent(shape, z, u_safe)
+    w = _reduced_exponent(z, u_safe, valid)
     s_inside = -jnp.expm1(-jnp.exp(-w))
     # Below the Fréchet (ξ > 0) lower endpoint S = 1; above the Weibull
     # (ξ < 0) upper endpoint S = 0.
     boundary = jnp.where(shape > 0, 1.0, 0.0)
+    s = jnp.where(valid, s_inside, boundary)
 
-    return jnp.where(valid, s_inside, boundary)
+    # Extended-real limits S(-inf) = 1, S(+inf) = 0.
+    return jnp.where(jnp.isinf(x), jnp.where(x > 0, 0.0, 1.0), s)
 
 
 def gev_log_survival(
@@ -139,14 +154,17 @@ def gev_log_survival(
 ) -> Float[Array, ...]:
     r"""Log survival function :math:`\log S(x) = \log(1 - F(x))` of the GEV."""
     shape = jnp.asarray(shape)
-    z = (x - loc) / scale
+    x = jnp.asarray(x)
+    z = _finite_z(x, loc, scale)
     valid, u_safe = _support(shape, z)
 
-    w = _reduced_exponent(shape, z, u_safe)
+    w = _reduced_exponent(z, u_safe, valid)
     ls_inside = jnp.log(-jnp.expm1(-jnp.exp(-w)))
     boundary = jnp.where(shape > 0, 0.0, -jnp.inf)
+    ls = jnp.where(valid, ls_inside, boundary)
 
-    return jnp.where(valid, ls_inside, boundary)
+    # Extended-real limits log S(-inf) = 0, log S(+inf) = -inf.
+    return jnp.where(jnp.isinf(x), jnp.where(x > 0, -jnp.inf, 0.0), ls)
 
 
 def _gev_icdf_from_neg_log_q(
