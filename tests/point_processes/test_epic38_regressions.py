@@ -316,3 +316,22 @@ class TestPinnedIntensityFullWindow:
         )
         # Sub-interval queries still use the live integrator.
         assert float(op.cumulative_hazard(2.0)) == pytest.approx(2.0, rel=1e-3)
+
+    def test_pin_selection_is_batched_and_jit_safe(self):
+        op = InhomogeneousPoissonProcess(
+            log_intensity_fn=lambda t: jnp.zeros_like(jnp.asarray(t)),
+            observation_window=5.0,
+            integrated_intensity=7.0,
+        )
+        # Batched endpoints: full-window entries take the pin, others the
+        # live integrator, with the batch shape preserved.
+        t = jnp.array([5.0, 2.0, 5.0])
+        out = op.cumulative_hazard(t)
+        assert out.shape == (3,)
+        assert jnp.allclose(out, jnp.array([7.0, 2.0, 7.0]), rtol=1e-3)
+        # And the same holds under jit (filter_jit: the operator holds a
+        # plain-callable leaf, per the documented PyTree contract).
+        import equinox as eqx
+
+        out_jit = eqx.filter_jit(op.cumulative_hazard)(t)
+        assert jnp.allclose(out_jit, out, rtol=1e-5)

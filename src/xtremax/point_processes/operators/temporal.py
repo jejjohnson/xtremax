@@ -444,31 +444,30 @@ class InhomogeneousPoissonProcess(eqx.Module):
         b_arr = self.observation_window if b is None else jnp.asarray(b)
         default_interval = a is None and b is None
 
-        if self.integrated_intensity is not None:
-            if default_interval:
-                return self.integrated_intensity
-            # Also honour the pin for an *explicit* full-window query
-            # (e.g. ``cumulative_hazard(op.observation_window)``) when
-            # the limits are statically known — otherwise the fallback
-            # integrator could disagree with the Λ(T) used by log_prob.
-            # Traced limits fall through: their values are unknown at
-            # trace time, so the live integrator is the only safe choice.
-            try:
-                if bool(jnp.all(a_arr == 0.0)) and bool(
-                    jnp.all(b_arr == self.observation_window)
-                ):
-                    return self.integrated_intensity
-            except jax.errors.ConcretizationTypeError:
-                pass
+        if default_interval and self.integrated_intensity is not None:
+            return self.integrated_intensity
+
         integrate = getattr(self.log_intensity_fn, "integrate", None)
         if integrate is not None:
-            return integrate(a_arr, b_arr)
-        return ipp_predict_count(
-            a_arr,
-            b_arr,
-            self.log_intensity_fn,
-            n_points=self.n_integration_points,
-        )
+            live = integrate(a_arr, b_arr)
+        else:
+            live = ipp_predict_count(
+                a_arr,
+                b_arr,
+                self.log_intensity_fn,
+                n_points=self.n_integration_points,
+            )
+        if self.integrated_intensity is not None:
+            # Honour the pin for explicit full-window endpoints (e.g.
+            # ``cumulative_hazard(op.observation_window)``) so those
+            # queries agree with the Λ(T) used by log_prob. The
+            # selection is an elementwise ``where`` — jit/vmap-safe and
+            # shape-preserving for batched endpoints, where a Python
+            # bool guard would either trace-fail or collapse the batch
+            # to the scalar pin.
+            is_full_window = (a_arr == 0.0) & (b_arr == self.observation_window)
+            return jnp.where(is_full_window, self.integrated_intensity, live)
+        return live
 
     def effective_lambda_max(self) -> Float[Array, ...]:
         """Return the current thinning bound.
