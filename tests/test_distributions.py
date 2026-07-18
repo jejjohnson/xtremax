@@ -1082,6 +1082,23 @@ class TestBoundarySemantics:
         )
         assert bool(d.support(jnp.asarray(2.0)))
 
+    def test_endpoint_detection_tolerates_roundoff(self):
+        """Standardizing the advertised endpoint for non-power-of-two
+        parameters (e.g. σ=3.7, ξ=-1.1) rounds ξ·z slightly off -1; the
+        endpoint limit must still be applied, not the -inf support mask."""
+        d = GeneralizedParetoDistribution(scale=3.7, concentration=-1.1)
+        assert jnp.isposinf(d.log_prob(d.upper_bound()))
+        d2 = GeneralizedParetoDistribution(scale=3.7, concentration=-1.0)
+        assert float(d2.log_prob(d2.upper_bound())) == pytest.approx(
+            float(-jnp.log(3.7)), rel=1e-5
+        )
+        g = GeneralizedExtremeValueDistribution(0.5, 3.7, concentration=-1.1)
+        assert jnp.isposinf(g.log_prob(g.upper_bound()))
+        g2 = GeneralizedExtremeValueDistribution(0.5, 3.7, concentration=-1.0)
+        assert float(g2.log_prob(g2.upper_bound())) == pytest.approx(
+            float(-jnp.log(3.7)), rel=1e-5
+        )
+
     def test_undefined_moment_sentinels_are_nan(self):
         assert jnp.isnan(
             GeneralizedExtremeValueDistribution(0.0, 1.0, concentration=0.5).skew()

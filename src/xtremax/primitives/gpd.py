@@ -83,7 +83,14 @@ def gpd_log_prob(
     # ξ < -1 (density diverges toward the endpoint), and 0 for -1 < ξ < 0.
     # The support mask alone would report -inf everywhere, disagreeing with
     # the closed endpoint the class-layer support advertises.
-    at_endpoint = (shape * r == -1.0) & finite & (x >= 0.0)
+    # Tolerance of a few ulps: standardizing the advertised endpoint
+    # x = -σ/ξ rounds through several float ops, so ξ·r lands near — not
+    # exactly on — -1 for ordinary parameter values. Snapping the band to the
+    # endpoint limit is benign: the interior density approaches that same
+    # limit continuously on both branches.
+    at_endpoint = (
+        (jnp.abs(shape * r + 1.0) <= 8.0 * jnp.finfo(r.dtype).eps) & finite & (x >= 0.0)
+    )
     endpoint_val = jnp.where(
         shape == -1.0,
         -jnp.log(scale),
