@@ -78,6 +78,18 @@ def gpd_log_prob(
     # Density vanishes at x = ±inf; NaN input propagates.
     in_support = (x >= 0.0) & valid & finite
     result = jnp.where(in_support, log_pdf, -jnp.inf)
+    # Exact finite upper endpoint (1 + ξx/σ = 0, ξ < 0): the density limit is
+    # ξ-dependent — 1/σ at ξ = -1 (GPD(-1) IS Uniform(0, σ)), +inf for
+    # ξ < -1 (density diverges toward the endpoint), and 0 for -1 < ξ < 0.
+    # The support mask alone would report -inf everywhere, disagreeing with
+    # the closed endpoint the class-layer support advertises.
+    at_endpoint = (shape * r == -1.0) & finite & (x >= 0.0)
+    endpoint_val = jnp.where(
+        shape == -1.0,
+        -jnp.log(scale),
+        jnp.where(shape < -1.0, jnp.inf, -jnp.inf),
+    )
+    result = jnp.where(at_endpoint, endpoint_val, result)
     return jnp.where(jnp.isnan(x), jnp.nan, result)
 
 
