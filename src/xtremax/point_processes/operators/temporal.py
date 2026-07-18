@@ -444,8 +444,22 @@ class InhomogeneousPoissonProcess(eqx.Module):
         b_arr = self.observation_window if b is None else jnp.asarray(b)
         default_interval = a is None and b is None
 
-        if default_interval and self.integrated_intensity is not None:
-            return self.integrated_intensity
+        if self.integrated_intensity is not None:
+            if default_interval:
+                return self.integrated_intensity
+            # Also honour the pin for an *explicit* full-window query
+            # (e.g. ``cumulative_hazard(op.observation_window)``) when
+            # the limits are statically known — otherwise the fallback
+            # integrator could disagree with the Λ(T) used by log_prob.
+            # Traced limits fall through: their values are unknown at
+            # trace time, so the live integrator is the only safe choice.
+            try:
+                if bool(jnp.all(a_arr == 0.0)) and bool(
+                    jnp.all(b_arr == self.observation_window)
+                ):
+                    return self.integrated_intensity
+            except jax.errors.ConcretizationTypeError:
+                pass
         integrate = getattr(self.log_intensity_fn, "integrate", None)
         if integrate is not None:
             return integrate(a_arr, b_arr)

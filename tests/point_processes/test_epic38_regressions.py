@@ -281,3 +281,38 @@ class TestIppIntegralConsistency:
         vals = integrate(jnp.zeros(2), jnp.array([2.0, 5.0]))
         assert vals.shape == (2,)
         assert jnp.allclose(vals, jnp.array([2.0, 14.0]), atol=1e-5)
+
+
+class TestBatchedHawkesCompensator:
+    """Round-1 review: batched (B,) T against (B, n) histories must give
+    one compensator per history, not a (B, B) cross-product."""
+
+    def test_batched_histories_match_per_row(self):
+        kernel = ExponentialKernel(alpha=0.5, beta=1.0)
+        gen_op = GeneralHawkesProcess(mu=0.3, kernel=kernel, observation_window=10.0)
+        times = jnp.array([[1.0, 2.0, 10.0], [0.5, 3.0, 4.0]])
+        mask = jnp.array([[True, True, False], [True, True, True]])
+        T = jnp.array([10.0, 8.0])
+        batched = jax.vmap(gen_op.cumulative_intensity)(T, times, mask)
+        assert batched.shape == (2,)
+        for k in range(2):
+            single = gen_op.cumulative_intensity(T[k], times[k], mask[k])
+            assert float(batched[k]) == pytest.approx(float(single), rel=1e-6)
+
+
+class TestPinnedIntensityFullWindow:
+    """Round-1 review: an explicit full-window query must honour a pinned
+    integrated_intensity, matching log_prob's Λ(T)."""
+
+    def test_explicit_full_window_uses_pin(self):
+        op = InhomogeneousPoissonProcess(
+            log_intensity_fn=lambda t: jnp.zeros_like(jnp.asarray(t)),
+            observation_window=5.0,
+            integrated_intensity=7.0,  # deliberately != quadrature (5.0)
+        )
+        assert float(op.cumulative_hazard(op.observation_window)) == pytest.approx(7.0)
+        assert float(op.survival(op.observation_window)) == pytest.approx(
+            float(jnp.exp(-7.0))
+        )
+        # Sub-interval queries still use the live integrator.
+        assert float(op.cumulative_hazard(2.0)) == pytest.approx(2.0, rel=1e-3)

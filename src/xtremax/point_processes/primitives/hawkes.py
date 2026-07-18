@@ -272,11 +272,17 @@ def general_hawkes_cumulative_intensity(
         upper = jnp.clip(T_arr - event_times, 0.0, jnp.inf)
         per_event = kernel_integral_fn(lower, upper)
         return mu * T_arr + jnp.sum(jnp.where(mask, per_event, 0.0), axis=-1)
+    # ``T[..., None]`` adds one axis that broadcasts against the events
+    # axis — pairwise for an unbatched vector T against (n,) events, and
+    # elementwise (one T per history) for batched aligned inputs, exactly
+    # like the exponential-kernel primitive. Masking through the same
+    # broadcast (rather than an unconditional ``mask[..., None, :]``,
+    # which mixed masks across batch rows) keeps both cases correct.
     upper = jnp.clip(T_arr[..., None] - event_times, 0.0, jnp.inf)
     lower = jnp.zeros_like(upper)
     per_event = kernel_integral_fn(lower, upper)
-    contrib = jnp.where(mask[..., None, :], per_event, 0.0)
-    return mu * T_arr + jnp.sum(contrib, axis=-1)
+    past = mask & (event_times <= T_arr[..., None])
+    return mu * T_arr + jnp.sum(jnp.where(past, per_event, 0.0), axis=-1)
 
 
 def general_hawkes_log_prob(
