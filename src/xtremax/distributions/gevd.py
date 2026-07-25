@@ -341,6 +341,25 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         result = jnp.where(is_gumbel, var_gumbel, var_gevd)
         return jnp.where(var_exists, result, jnp.inf)
 
+    def covariance(self) -> jnp.ndarray:
+        """Marginal variance broadcast to the batch shape.
+
+        Structural seam for ``pipekit_cycle.ObservationNoise`` (which
+        requires ``covariance()`` and ``sample(key, shape)``): together
+        with the existing :meth:`sample`, this lets the distribution act
+        as a non-Gaussian observation-error model in data-assimilation
+        experiments — without xtremax importing pipekit (see
+        ``docs/interop.md``). The observation errors are treated as
+        independent per batch element, so the "covariance" is the
+        marginal variance vector rather than a dense matrix; consuming
+        analysis steps interpret it as a diagonal.
+
+        Returns:
+            Variance broadcast to ``batch_shape`` (``+inf`` where the
+            variance does not exist, i.e. ξ >= 1/2).
+        """
+        return jnp.broadcast_to(jnp.asarray(self.variance), self.batch_shape)
+
     def kurtosis(self) -> jnp.ndarray:
         """
         Compute the excess kurtosis of the distribution.
