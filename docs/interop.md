@@ -46,8 +46,13 @@ from xtremax.distributions import GeneralizedParetoDistribution
 
 noise = GeneralizedParetoDistribution(scale=0.5, concentration=0.2)
 noise.covariance()                       # marginal variance (diagonal view)
-noise.sample(jax.random.PRNGKey(0), (64,))  # error draws
+noise.sample(jax.random.PRNGKey(0), (64,))        # error draws
+noise.sample(jax.random.PRNGKey(0), shape=(64,))  # protocol keyword spelling
 ```
+
+`sample` keeps NumPyro's `sample_shape` parameter but also accepts the
+protocol's `shape` spelling as a keyword-only alias, so both
+NumPyro-style and protocol-typed callers work.
 
 `covariance()` returns the marginal variance broadcast to the batch
 shape — the errors are independent per batch element, so consuming

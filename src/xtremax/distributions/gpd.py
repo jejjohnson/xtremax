@@ -164,7 +164,13 @@ class GeneralizedParetoDistribution(dist.Distribution):
 
         super().__init__(batch_shape=batch_shape, validate_args=validate_args)
 
-    def sample(self, key: jnp.ndarray, sample_shape: tuple = ()) -> jnp.ndarray:
+    def sample(
+        self,
+        key: jnp.ndarray,
+        sample_shape: tuple = (),
+        *,
+        shape: tuple | None = None,
+    ) -> jnp.ndarray:
         """
         Generate samples from the GPD using inverse transform sampling.
 
@@ -179,17 +185,24 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Args:
             key: JAX random key for sampling
             sample_shape: Shape of samples to generate
+            shape: Keyword-only alias for ``sample_shape`` matching the
+                ``pipekit_cycle.ObservationNoise`` protocol's parameter
+                name (``sample(key, shape)``), so callers typed against
+                that protocol can pass it by keyword. Pass at most one
+                of the two.
 
         Returns:
             Array of samples from the GPD (all within support)
         """
+        if shape is not None:
+            sample_shape = shape
         check_prng_key(key)
-        shape = sample_shape + self.batch_shape
+        extended_shape = sample_shape + self.batch_shape
 
         # JAX's Uniform(0, 1) sampler can emit exact 0 or 1 at the
         # endpoints; passing those to icdf yields -inf/+inf and poisons
         # downstream computations. Clamp away from the endpoints.
-        uniform_samples = dist.Uniform(0.0, 1.0).sample(key, shape)
+        uniform_samples = dist.Uniform(0.0, 1.0).sample(key, extended_shape)
         eps = jnp.finfo(uniform_samples.dtype).eps
         uniform_samples = jnp.clip(uniform_samples, eps, 1.0 - eps)
 

@@ -75,11 +75,16 @@ class TestStructuralConformance:
     )
     def test_observation_noise_protocol(self, d):
         assert isinstance(d, _ObservationNoise)
-        # And the members actually work with the protocol's call shape.
+        # And the members actually work with the protocol's call shape —
+        # including the protocol's *keyword* spelling `shape=`, which a
+        # caller typed against the Protocol may legitimately use (the
+        # runtime isinstance check only verifies member presence).
         cov = d.covariance()
         draws = d.sample(jax.random.PRNGKey(0), (5,))
+        draws_kw = d.sample(jax.random.PRNGKey(0), shape=(5,))
         assert np.asarray(cov).shape == ()
         assert draws.shape == (5,)
+        np.testing.assert_array_equal(np.asarray(draws), np.asarray(draws_kw))
 
     def test_quantile_regressor_is_predictor(self):
         sklearn_present = importlib.util.find_spec("sklearn") is not None
