@@ -151,13 +151,13 @@ def decluster_separation(
     This method first identifies all local maxima above threshold,
     then iteratively removes peaks that are too close to larger peaks.
 
-    Ties between equal consecutive values (plateaus) are broken
-    asymmetrically: a position counts as a peak when it is strictly
-    greater than its left neighbour and greater than *or equal to* its
-    right neighbour, so a flat-topped exceedance yields exactly one peak,
-    stamped at the plateau's first sample. Quantized observational data
-    (rounded gauges, integer records) hit this case routinely; requiring
-    strict inequality on both sides used to drop such events entirely.
+    Plateaus (runs of equal consecutive values) count as a single peak
+    when the values adjacent to the entire run are strictly lower — the
+    peak is stamped at the run's first sample. Quantized observational
+    data (rounded gauges, integer records) hit this case routinely;
+    requiring strict inequality between adjacent samples used to drop
+    such events entirely, while a naive adjacent-sample tie-break would
+    also mark rising shelves (e.g. ``[0, 5, 5, 6]``) as peaks.
     """
     # Identify local maxima above threshold.
     #
@@ -168,17 +168,43 @@ def decluster_separation(
     # missing neighbour as "no constraint from that side": a boundary
     # position is a peak if it is strictly greater than its single
     # existing neighbour (and above threshold).
-    # Plateau tie-breaking (equal consecutive maxima): require strictly
-    # greater than the left neighbour but only >= the right neighbour, so
-    # a flat-topped exceedance still produces exactly one peak — at the
-    # plateau's first sample. Strict inequality on both sides dropped
-    # such events entirely.
+    # Plateau-aware peak detection (equal consecutive maxima): group the
+    # series into maximal runs of equal values; a run is a peak iff the
+    # values adjacent to the *entire* run are strictly lower (a missing
+    # neighbour at the series boundary is no constraint). The peak is
+    # stamped at the run's first sample. Comparing only adjacent samples
+    # either dropped flat-topped exceedances entirely (strict on both
+    # sides) or marked rising shelves like [0, 5, 5, 6] as peaks
+    # (>= on one side).
     exceedances = da > threshold
-    left = da.shift({dim: 1})
-    right = da.shift({dim: -1})
-    left_ok = left.isnull() | (da > left)
-    right_ok = right.isnull() | (da >= right)
-    is_peak = left_ok & right_ok & exceedances
+
+    def _plateau_peaks_1d(values: np.ndarray, exc: np.ndarray) -> np.ndarray:
+        n = values.shape[0]
+        peaks = np.zeros(n, dtype=bool)
+        if n == 0:
+            return peaks
+        # Run starts: first index, then every value change. NaN != NaN,
+        # so NaN samples form their own (never-exceeding) runs.
+        change = np.concatenate(([True], values[1:] != values[:-1]))
+        starts = np.flatnonzero(change)
+        ends = np.append(starts[1:] - 1, n - 1)
+        left_ok = (starts == 0) | (values[np.maximum(starts - 1, 0)] < values[starts])
+        right_ok = (ends == n - 1) | (
+            values[np.minimum(ends + 1, n - 1)] < values[starts]
+        )
+        peak_starts = starts[left_ok & right_ok & exc[starts]]
+        peaks[peak_starts] = True
+        return peaks
+
+    is_peak = xr.apply_ufunc(
+        _plateau_peaks_1d,
+        da,
+        exceedances,
+        input_core_dims=[[dim], [dim]],
+        output_core_dims=[[dim]],
+        vectorize=True,
+        output_dtypes=[bool],
+    )
 
     def _select_separated_peaks_1d(
         values: np.ndarray, peak_mask: np.ndarray
