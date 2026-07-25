@@ -86,6 +86,22 @@ class TestStructuralConformance:
         assert draws.shape == (5,)
         np.testing.assert_array_equal(np.asarray(draws), np.asarray(draws_kw))
 
+    def test_batched_noise_draw_semantics(self):
+        """`shape` is the *leading draw batch* (the protocol's "batch
+        shape"), prepended to the distribution's own batch shape — the
+        NumPyro `sample_shape` convention. A d-element heteroscedastic
+        noise model asked for n draws returns (n, d): n error vectors of
+        dimension d, which is what perturbed-observation ensemble
+        methods consume. `shape` is NOT the full output shape."""
+        d = GeneralizedExtremeValueDistribution(
+            loc=jnp.array([0.0, 1.0, 2.0]),
+            scale=1.0,
+            concentration=0.1,
+        )
+        assert d.batch_shape == (3,)
+        draws = d.sample(jax.random.PRNGKey(0), shape=(2,))
+        assert draws.shape == (2, 3)
+
     @pytest.mark.parametrize(
         "d",
         [

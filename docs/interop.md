@@ -52,7 +52,13 @@ noise.sample(jax.random.PRNGKey(0), shape=(64,))  # protocol keyword spelling
 
 `sample` keeps NumPyro's `sample_shape` parameter but also accepts the
 protocol's `shape` spelling as a keyword-only alias, so both
-NumPyro-style and protocol-typed callers work.
+NumPyro-style and protocol-typed callers work. In both spellings the
+argument is the **leading draw batch** (the protocol's "batch shape"),
+prepended to the distribution's own batch shape: a heteroscedastic
+noise model with `batch_shape == (d,)` asked for `shape=(n,)` returns
+`(n, d)` — `n` error vectors of dimension `d`, which is what
+perturbed-observation ensemble methods consume. It is *not* the full
+output shape.
 
 `covariance()` returns the marginal variance broadcast to the batch
 shape — the errors are independent per batch element, so consuming
