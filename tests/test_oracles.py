@@ -414,7 +414,7 @@ class TestQuantileRoundTrips:
     def test_gev_icdf_of_cdf_direction(self, xi):
         """icdf ∘ cdf ≈ identity at interior points (the other
         direction of the round-trip)."""
-        x = np.array([-1.0, 0.5, 2.0]) if xi >= 0 else np.array([-1.0, 0.5, 2.0])
+        x = np.array([-1.0, 0.5, 2.0])
         lo, hi = _gev_frozen(xi).support()
         x = np.clip(x, lo + 0.1, hi - 0.1)
         x_back = np.asarray(gev_icdf(gev_cdf(x, LOC, SCALE, xi), LOC, SCALE, xi))
@@ -438,12 +438,15 @@ class TestFloat64Isolation:
             LOC, SCALE = 1.5, 2.0
             for xi in (-0.3, 0.0, 1e-5, 0.3):
                 for q in (1e-4, 0.5, 1.0 - 1e-4):
+                    tol = 1e-9 * max(q, 1e-4) + 1e-12
                     x = gev_icdf(np.float64(q), LOC, SCALE, np.float64(xi))
-                    assert abs(float(gev_cdf(x, LOC, SCALE, np.float64(xi))) - q) < 1e-9 * max(q, 1e-4) + 1e-12
+                    q_back = float(gev_cdf(x, LOC, SCALE, np.float64(xi)))
+                    assert abs(q_back - q) < tol
                     ref = st.genextreme(-xi, loc=LOC, scale=SCALE).ppf(q)
                     assert np.isclose(float(x), ref, rtol=1e-8), (xi, q, float(x), ref)
                     xp = gpd_icdf(np.float64(q), SCALE, np.float64(xi))
-                    assert abs(float(gpd_cdf(xp, SCALE, np.float64(xi))) - q) < 1e-9 * max(q, 1e-4) + 1e-12
+                    qp_back = float(gpd_cdf(xp, SCALE, np.float64(xi)))
+                    assert abs(qp_back - q) < tol
 
             # Deep-tail survival keeps precision where 1 - cdf cancels to 0.
             s = float(gev_survival(np.float64(40.0), 0.0, 1.0, np.float64(0.0)))
