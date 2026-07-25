@@ -399,6 +399,26 @@ class TestSlidingBlockMaxima:
         # the final block's maximum (11) is present.
         np.testing.assert_array_equal(out.values, [3.0, 7.0, 11.0])
 
+    def test_stride_keeps_valid_partial_windows_with_min_periods(self):
+        """Codex round on #86: an explicit min_periods < window_size
+        declares partial edge windows valid, so the stride offset must
+        anchor at the first window satisfying min_periods — not discard
+        those windows by jumping to the first complete one."""
+        da = xr.DataArray(np.arange(3.0), dims="time")
+        out = sliding_block_maxima(da, window_size=5, stride=2, min_periods=1)
+        # Window maxima at labels 0..2 are [0, 1, 2]; offset 0, stride 2.
+        np.testing.assert_array_equal(out.values, [0.0, 2.0])
+
+    def test_stride_min_periods_offset_center(self):
+        da = xr.DataArray(np.arange(8.0), dims="time")
+        out = sliding_block_maxima(
+            da, window_size=4, stride=2, min_periods=2, center=True
+        )
+        # center=True window at label i spans [i-2, i+1]; label 0 already
+        # holds two in-bounds samples (0, 1), so nothing is skipped.
+        full = da.rolling(time=4, center=True, min_periods=2).max()
+        np.testing.assert_array_equal(out.values, full.values[0::2])
+
 
 class TestDeclusterPlateau:
     """#68 — flat-topped exceedances must yield exactly one peak."""

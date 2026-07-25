@@ -156,6 +156,26 @@ class TestCleanupBatch:
         assert set(ds.data_vars) == before  # input untouched
         assert "slope" in out.data_vars and "roughness" in out.data_vars
 
+    def test_spatial_features_handle_transposed_input(self):
+        """Codex round on #86: a dataset storing its variables as
+        (lon, lat) must produce the same labeled features as the
+        (lat, lon) layout — the extractors transpose by name."""
+        from xtremax.simulations.spatial import (
+            augment_spatial_features,
+            create_iberian_domain,
+        )
+
+        ds = create_iberian_domain(res_deg=0.5, seed=0)
+        ds_t = ds.transpose("lon", "lat")
+        out = augment_spatial_features(ds)
+        out_t = augment_spatial_features(ds_t)
+        for var in ("dist_to_coast", "slope", "aspect", "roughness"):
+            np.testing.assert_allclose(
+                out[var].transpose("lat", "lon").values,
+                out_t[var].transpose("lat", "lon").values,
+                equal_nan=True,
+            )
+
     def test_simulators_reject_transposed_parameter_fields(self):
         """Blind `.values.transpose()` used to silently mislabel data when
         inputs arrived with unexpected dims; named transposes now raise."""

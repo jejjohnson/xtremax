@@ -163,7 +163,9 @@ class SpatialFeatureExtractor:
         Calculates Euclidean distance to the nearest coast (mask boundary).
         Uses SciPy's Distance Transform.
         """
-        mask = ds["mask"].values
+        # Transpose by name so datasets storing (lon, lat) — or any other
+        # order — are processed and labeled correctly.
+        mask = ds["mask"].transpose("lat", "lon").values
         # distance_transform_edt calculates distance to background (0)
         # We want distance from land (1) to ocean (0)
         dist_grid = distance_transform_edt(mask)
@@ -184,7 +186,10 @@ class SpatialFeatureExtractor:
         Slope is critical for orographic precipitation.
         Aspect is critical for solar insolation (South vs North facing).
         """
-        elev = ds["elevation"].values
+        # Transpose by name so the row axis is latitude regardless of the
+        # dataset's stored dim order (the per-row cos(lat) scaling below
+        # depends on it).
+        elev = ds["elevation"].transpose("lat", "lon").values
         res_deg = float(ds.lat[1] - ds.lat[0])
 
         # Metric spacing differs per axis: one degree of longitude spans
@@ -222,7 +227,9 @@ class SpatialFeatureExtractor:
         Calculates Terrain Roughness Index (TRI).
         Roughness = Std Dev of elevation in a local window.
         """
-        elev = ds["elevation"].values
+        # Transpose by name so the output labels match the array layout
+        # for any stored dim order.
+        elev = ds["elevation"].transpose("lat", "lon").values
         # Uniform (boxcar) window of `window_size` pixels, matching the
         # TRI definition — previously this used a Gaussian filter with
         # sigma=window_size, i.e. a much wider, weighted window.

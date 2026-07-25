@@ -182,13 +182,20 @@ def sliding_block_maxima(
     rolling = da.rolling({dim: window_size}, center=center, min_periods=min_periods)
     maxima = rolling.max()
 
-    # Apply stride by subsampling, starting from the first complete
-    # window so stride == window_size reproduces non-overlapping blocks
-    # (coarsen equivalence). Rolling labels sit at the window end
-    # (center=False) or centre (center=True), so the first complete
-    # window's label is at index window_size - 1 or window_size // 2.
+    # Apply stride by subsampling, starting from the first *valid*
+    # window — the first position whose window holds at least
+    # min_periods samples. With the default min_periods == window_size
+    # that is the first complete window, so stride == window_size
+    # reproduces non-overlapping blocks (coarsen equivalence); an
+    # explicit smaller min_periods keeps the valid partial edge windows
+    # instead of discarding them. Rolling labels sit at the window end
+    # (center=False) or centre (center=True, window spanning
+    # [i - w//2, i + (w-1)//2]).
     if stride > 1:
-        offset = window_size // 2 if center else window_size - 1
+        if center:
+            offset = max(0, min_periods - 1 - (window_size - 1) // 2)
+        else:
+            offset = min_periods - 1
         maxima = maxima.isel({dim: slice(offset, None, stride)})
 
     return maxima
@@ -355,7 +362,12 @@ def r_largest_block_maxima(
                 vectorize=True,
                 output_dtypes=[float],
                 dask="parallelized",
-                dask_gufunc_kwargs={"output_sizes": {"order": r}},
+                dask_gufunc_kwargs={
+                    "output_sizes": {"order": r},
+                    # Core-dim inputs chunked along `dim` must be
+                    # consolidated before the gufunc runs.
+                    "allow_rechunk": True,
+                },
             )
 
         result = groups.map(_group_top_r)
@@ -390,7 +402,12 @@ def r_largest_block_maxima(
                 vectorize=True,
                 output_dtypes=[float],
                 dask="parallelized",
-                dask_gufunc_kwargs={"output_sizes": {"order": r}},
+                dask_gufunc_kwargs={
+                    "output_sizes": {"order": r},
+                    # Core-dim inputs chunked along `dim` must be
+                    # consolidated before the gufunc runs.
+                    "allow_rechunk": True,
+                },
             )
 
         result = trimmed.groupby("_block").map(_per_block_top_r)
