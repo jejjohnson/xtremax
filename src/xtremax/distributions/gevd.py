@@ -168,13 +168,19 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
             shape: Keyword-only alias for ``sample_shape`` matching the
                 ``pipekit_cycle.ObservationNoise`` protocol's parameter
                 name (``sample(key, shape)``), so callers typed against
-                that protocol can pass it by keyword. Pass at most one
-                of the two.
+                that protocol can pass it by keyword. Passing both a
+                non-empty ``sample_shape`` and ``shape`` raises
+                ``ValueError``.
 
         Returns:
             Array of samples from the GEVD
         """
         if shape is not None:
+            if sample_shape != ():
+                raise ValueError(
+                    "Pass only one of 'sample_shape' (NumPyro spelling) or "
+                    "'shape' (ObservationNoise protocol spelling), not both."
+                )
             sample_shape = shape
         check_prng_key(key)
         extended_shape = sample_shape + self.batch_shape

@@ -86,6 +86,20 @@ class TestStructuralConformance:
         assert draws.shape == (5,)
         np.testing.assert_array_equal(np.asarray(draws), np.asarray(draws_kw))
 
+    @pytest.mark.parametrize(
+        "d",
+        [
+            GeneralizedExtremeValueDistribution(0.0, 1.0, concentration=0.1),
+            GeneralizedParetoDistribution(1.0, concentration=0.1),
+        ],
+        ids=lambda d: type(d).__name__,
+    )
+    def test_both_shape_spellings_raise(self, d):
+        """Passing both spellings must fail loudly — a silent override
+        would produce valid-looking draws with wrong leading dims."""
+        with pytest.raises(ValueError, match="only one"):
+            d.sample(jax.random.PRNGKey(0), (100,), shape=(10,))
+
     def test_quantile_regressor_is_predictor(self):
         sklearn_present = importlib.util.find_spec("sklearn") is not None
         if not sklearn_present:
