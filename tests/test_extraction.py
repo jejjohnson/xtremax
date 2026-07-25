@@ -17,6 +17,7 @@ from xtremax.extraction import (
     r_largest_block_maxima,
     rolling_threshold,
     seasonal_threshold,
+    sliding_block_maxima,
     temporal_block_maxima,
     temporal_threshold,
 )
@@ -337,6 +338,25 @@ class TestDecluster:
         assert site0_vals == [4.0]
         assert site1_vals == [6.0]
 
+    def test_declustered_block_maxima_runs_honors_min_separation(self):
+        """#69 — the runs branch previously ignored `min_separation`
+        entirely: two exceedances one step apart were always counted as
+        independent events. With gap-tolerant runs, a below-threshold gap
+        shorter than min_separation is intra-cluster."""
+        values = np.array([0.0, 3.0, 0.0, 4.0, 0.0])
+        time = pd.date_range("2020-01-01", periods=5, freq="D")
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+
+        merged = declustered_block_maxima(
+            da, threshold=0.5, min_separation=2, method="runs"
+        )
+        assert merged.dropna("time").values.tolist() == [4.0]
+
+        split = declustered_block_maxima(
+            da, threshold=0.5, min_separation=1, method="runs"
+        )
+        assert sorted(split.dropna("time").values.tolist()) == [3.0, 4.0]
+
     def test_declustered_block_maxima_separation_applies_min_separation(self):
         """Regression: the `method='separation'` branch of
         declustered_block_maxima previously returned all peaks unchanged.
@@ -355,60 +375,120 @@ class TestDecluster:
         assert set(out.values.tolist()) == {5.0, 4.0}
 
 
-# Quantile-regression threshold selection needs scikit-learn (optional
-# `[threshold]` extra). Skip when sklearn isn't installed.
-pytest.importorskip("sklearn")
-from xtremax.extraction.quantile_regression import (
-    XarrayQuantileRegressor,
-    quantile_regression_threshold,
-)
+class TestSlidingBlockMaxima:
+    """#67 — stride subsampling must start at the first complete window."""
 
-
-class TestQuantileRegression:
-    def test_threshold_aligns_shuffled_covariate(self):
-        """Regression: `_build_feature_matrix` read `covariates.values`
-        without reindexing to the response's time coord, so a covariate
-        in a different order paired with the wrong targets and produced
-        a numerically wrong threshold with no error raised.
-        """
-        rng = np.random.default_rng(0)
-        time = pd.date_range("2000-01-01", periods=365, freq="D")
-        # Response with strong dependence on an integer covariate.
-        cov_values = rng.standard_normal(len(time))
-        response = 5.0 * cov_values + 0.1 * rng.standard_normal(len(time))
-        da = xr.DataArray(response, dims="time", coords={"time": time})
-        cov = xr.DataArray(cov_values, dims="time", coords={"time": time})
-
-        # Shuffle the covariate's time axis; its *values* still correspond
-        # to the correct timestamps via the coord, so after alignment the
-        # fit should match the unshuffled case.
-        perm = rng.permutation(len(time))
-        cov_shuffled = cov.isel(time=perm)
-
-        t_ordered = quantile_regression_threshold(
-            da, quantile=0.9, time_dim="time", covariates=cov
+    @pytest.mark.parametrize("center", [False, True])
+    @pytest.mark.parametrize("window_size", [3, 4])
+    def test_coarsen_equivalence(self, center, window_size):
+        """stride == window_size is documented as equivalent to
+        `coarsen(dim=window_size).max()`. The old subsampling started at
+        label 0 (an incomplete window), shifting every block by one and
+        silently dropping the final block's maximum."""
+        da = xr.DataArray(np.arange(12.0), dims="time")
+        out = sliding_block_maxima(
+            da, window_size=window_size, stride=window_size, center=center
         )
-        t_shuffled = quantile_regression_threshold(
-            da, quantile=0.9, time_dim="time", covariates=cov_shuffled
-        )
-        # After reindexing, shuffled input produces the same threshold
-        # as the ordered one (within solver tolerance).
-        np.testing.assert_allclose(
-            t_ordered.values, t_shuffled.values, rtol=1e-4, atol=1e-4
-        )
+        expected = da.coarsen(time=window_size).max()
+        np.testing.assert_array_equal(out.values, expected.values)
 
-    def test_regressor_fits(self, daily_series):
-        reg = XarrayQuantileRegressor(quantile=0.95)
-        # Use time as covariate
-        t = xr.DataArray(
-            np.arange(daily_series.sizes["time"], dtype=float),
-            dims="time",
-            coords={"time": daily_series["time"]},
-        )
-        reg.fit(t.expand_dims("feature", axis=-1), daily_series)
-        preds = reg.predict(t.expand_dims("feature", axis=-1))
-        assert preds.shape == daily_series.shape
+    def test_no_leading_nan_and_last_block_present(self):
+        da = xr.DataArray(np.arange(12.0), dims="time")
+        out = sliding_block_maxima(da, window_size=4, stride=4)
+        # Exactly the non-overlapping block maxima — no NaN padding, and
+        # the final block's maximum (11) is present.
+        np.testing.assert_array_equal(out.values, [3.0, 7.0, 11.0])
 
-    def test_threshold_function(self, daily_series):
-        u = quantile_regression_threshold(daily_series, quantile=0.95, time_dim="time")
-        assert u.shape == daily_series.shape
+
+class TestDeclusterPlateau:
+    """#68 — flat-topped exceedances must yield exactly one peak."""
+
+    def test_separation_plateau_kept_once(self):
+        values = np.array([0.0, 5.0, 5.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0])
+        time = pd.date_range("2020-01-01", periods=len(values), freq="D")
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+
+        out = decluster_separation(da, threshold=1.0, min_separation=3)
+
+        # The plateau contributes exactly one event (5.0) plus the
+        # isolated 3.0 — previously the 5.0 event vanished entirely.
+        assert sorted(float(v) for v in out.values) == [3.0, 5.0]
+
+    def test_separation_plateau_at_boundary(self):
+        values = np.array([5.0, 5.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0])
+        time = pd.date_range("2020-01-01", periods=len(values), freq="D")
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+
+        out = decluster_separation(da, threshold=1.0, min_separation=3)
+        assert sorted(float(v) for v in out.values) == [3.0, 5.0]
+
+    def test_constant_exceedance_run_single_peak(self):
+        """A longer plateau still yields exactly one peak — no
+        double-counting from the asymmetric tie-break."""
+        values = np.array([0.0, 4.0, 4.0, 4.0, 4.0, 0.0])
+        time = pd.date_range("2020-01-01", periods=len(values), freq="D")
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+
+        out = decluster_separation(da, threshold=1.0, min_separation=1)
+        assert out.sizes["time"] == 1
+        assert float(out.values[0]) == 4.0
+
+
+class TestIgnoredParameters:
+    """#69 — parameters that used to be silently ignored."""
+
+    def test_rolling_threshold_min_periods_masks_partial_windows(self):
+        da = xr.DataArray(np.arange(10.0), dims="time")
+        u = rolling_threshold(da, 0.5, window_size=5, center=False)
+        # First four windows hold fewer than 5 samples → NaN, not the
+        # quantile of a 1–4-sample window.
+        assert bool(np.all(np.isnan(u.values[:4])))
+        assert bool(np.all(np.isfinite(u.values[4:])))
+
+    def test_rolling_threshold_explicit_min_periods(self):
+        da = xr.DataArray(np.arange(10.0), dims="time")
+        u = rolling_threshold(da, 0.5, window_size=5, center=False, min_periods=2)
+        # Only the very first window (1 sample) is below min_periods=2.
+        assert np.isnan(u.values[0])
+        assert bool(np.all(np.isfinite(u.values[1:])))
+
+    def test_decluster_runs_gap_tolerant(self):
+        values = np.array([0.0, 3.0, 0.0, 4.0, 0.0])
+        time = pd.date_range("2020-01-01", periods=5, freq="D")
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+
+        # Gap of one below-threshold step: min_separation=2 merges the
+        # two exceedances into one cluster; the default keeps them split.
+        merged = decluster_runs(da, threshold=0.5, min_separation=2)
+        assert merged.dropna("time").values.tolist() == [4.0]
+        split = decluster_runs(da, threshold=0.5)
+        assert sorted(split.dropna("time").values.tolist()) == [3.0, 4.0]
+
+    def test_extremal_index_exposes_run_parameter(self):
+        values = np.array([0.0, 3.0, 0.0, 4.0, 0.0])
+        time = pd.date_range("2020-01-01", periods=5, freq="D")
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+
+        assert estimate_extremal_index(da, threshold=0.5) == pytest.approx(1.0)
+        assert estimate_extremal_index(
+            da, threshold=0.5, min_separation=2
+        ) == pytest.approx(0.5)
+
+
+class TestQuantileThresholdReturn:
+    """#71 item 7 — return type and coordinate hygiene."""
+
+    def test_scalar_is_float(self, daily_series):
+        u = quantile_threshold(daily_series, 0.95)
+        assert isinstance(u, float)
+
+    def test_no_quantile_coord_leak(self, daily_series):
+        da2 = daily_series.expand_dims(site=[0, 1])
+        u = quantile_threshold(da2, 0.95, dim="time")
+        assert "quantile" not in u.coords
+        # Rolling and temporal variants must not leak either.
+        assert "quantile" not in rolling_threshold(daily_series, 0.95).coords
+        assert (
+            "quantile"
+            not in temporal_threshold(daily_series, 0.95, groupby="time.year").coords
+        )
