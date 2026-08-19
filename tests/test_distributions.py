@@ -32,7 +32,6 @@ class TestGEVD:
         assert lp.shape == (32,)
         assert jnp.all(jnp.isfinite(lp))
 
-    @pytest.mark.slow
     def test_cdf_icdf_round_trip(self):
         dist = GeneralizedExtremeValueDistribution(
             loc=0.0, scale=1.0, concentration=0.2
