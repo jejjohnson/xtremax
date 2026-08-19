@@ -21,7 +21,6 @@ def test_trapezoid_integrates_constant_exactly():
     assert jnp.allclose(result, 10.0, atol=1e-5)
 
 
-@pytest.mark.slow
 def test_simpson_integrates_quadratic_exactly():
     # Simpson is exact on cubics; λ(t) = 2t + 1 integrates to t² + t.
     # So log λ(t) = log(2t + 1).

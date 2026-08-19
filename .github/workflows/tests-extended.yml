@@ -30,9 +30,10 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: tests-extended-${{ github.ref }}
-  cancel-in-progress: false
+# Deliberately NO concurrency group. Actions keeps at most one running and
+# one pending run per group, so a queued run is dropped when a newer one
+# arrives — even with cancel-in-progress: false. This lane promises a run
+# per merge and per tag, so every trigger has to survive.
 
 jobs:
   test-extended:

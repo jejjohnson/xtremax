@@ -15,7 +15,6 @@ class TestEventHistory:
         assert int(h.n_events()) == 0
         assert jnp.allclose(h.last_time(default=-1.0), -1.0)
 
-    @pytest.mark.slow
     def test_append_sets_mask_and_time(self):
         h = EventHistory.empty(max_events=4)
         h1 = h.append(jnp.asarray(0.5))
