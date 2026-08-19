@@ -15,6 +15,7 @@ from xtremax.point_processes.primitives.marked import (
 
 
 class TestMarksLogProb:
+    @pytest.mark.slow
     def test_constant_gaussian_marks_match_sum_of_densities(self):
         """Σ log N(m; 0, 1) with independent marks."""
         event_times = jnp.array([0.1, 0.5, 1.0, 2.0])
