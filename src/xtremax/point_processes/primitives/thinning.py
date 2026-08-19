@@ -21,8 +21,10 @@ the current :class:`EventHistory`. Hawkes, ThinningProcess, and any
 future history-dependent family can delegate to it.
 
 :func:`retention_compensator` computes
-:math:`\\int_0^T (1 - p(t|H(t)))\\lambda(t|H(t))\\, dt` used by
-thinning-of-base log-likelihoods.
+:math:`\\int_0^T (1 - p(t|H(t)))\\lambda(t|H(t))\\, dt`, which
+thinning-of-base log-likelihoods **add** to the base likelihood (the base
+subtracts the full compensator :math:`\\int\\lambda`; the thinned process
+owes only :math:`\\int p\\lambda`).
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from jax import random
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from xtremax.point_processes._history import EventHistory
+from xtremax.point_processes._results import SampleResult
 
 
 def thinning_sample(
@@ -130,7 +133,7 @@ def thinning_sample(
     # Final pass: pad padding positions with T so downstream intensity
     # evaluations stay inside the window.
     times = jnp.where(final_history.mask, final_history.times, T_arr)
-    return times, final_history.mask, n_proposals
+    return SampleResult(times, final_history.mask, n_proposals)
 
 
 def _prefix_history(history: EventHistory, keep: Bool[Array, ...]) -> EventHistory:

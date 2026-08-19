@@ -5,8 +5,9 @@ a domain :math:`D \\subset \\mathbb{R}^d` with intensity ``λ > 0`` has
 
 * count :math:`N(D) \\sim \\mathrm{Poisson}(\\lambda |D|)`,
 * conditional locations iid uniform on ``D``,
-* joint log-likelihood
-  :math:`\\log L = n \\log \\lambda - \\lambda |D| - n \\log |D|`.
+* Janossy log-likelihood :math:`\\log L = n \\log \\lambda - \\lambda |D|`
+  (the :math:`-\\log n!` and :math:`-n \\log |D|` normalisers are
+  deliberately dropped — see :func:`hpp_spatial_log_prob`).
 
 The shape contract for a sequence of locations is ``(..., max_events, d)``
 plus a boolean ``mask`` of shape ``(..., max_events)``. This is the same
@@ -22,6 +23,7 @@ from jax import random
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from xtremax.point_processes._domain import RectangularDomain
+from xtremax.point_processes._results import SpatialSampleResult
 
 
 def hpp_spatial_log_prob(
@@ -95,7 +97,9 @@ def hpp_spatial_sample(
         Tuple ``(locations, mask, n_events)``:
 
         * ``locations`` shape ``(max_events, d)`` — sorted along axis 0
-          by lex order of the coordinate tuple, with padding rows set
+          by the **first coordinate only** (a deterministic order that
+          pushes padding rows to the tail; ties between equal first
+          coordinates keep their sampled order), with padding rows set
           to ``domain.lo`` (an arbitrary in-domain anchor that keeps
           downstream intensity calls inside the support).
         * ``mask`` shape ``(max_events,)`` — ``True`` at real events.
@@ -138,7 +142,7 @@ def hpp_spatial_sample(
     # ``domain.sample_uniform`` builds the trailing ``(d,)`` axis from
     # ``n_dims`` directly, we are safe by construction.
     del d
-    return locations, sorted_mask, n_uncapped
+    return SpatialSampleResult(locations, sorted_mask, n_uncapped)
 
 
 def hpp_spatial_intensity(

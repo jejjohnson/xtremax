@@ -8,13 +8,27 @@ so under separability the log-likelihood of *observed* events
 decomposes as
 
 .. math::
-    \\log L_\\text{thin} = \\log L_\\text{base}(\\{t_i\\})
+    \\log L_\\text{thin} = \\sum_i \\log p(t_i) \\lambda(t_i) - \\int_0^T
+        p \\lambda = \\log L_\\text{base}(\\{t_i\\})
         + \\sum_i \\log p(t_i | H_i, m_i)
-        - \\int_0^T (1 - p(t | H)) \\lambda_\\text{base}(t | H)\\, dt.
+        + \\int_0^T (1 - p(t | H)) \\lambda_\\text{base}(t | H)\\, dt.
 
-The first two terms are exact given the observed sequence; the
-correction integral is computed by trapezoid quadrature through
+The first two terms are exact given the observed sequence; the correction
+integral is **added** — the base likelihood subtracts the full compensator
+:math:`\\int \\lambda`, but only :math:`\\int p\\lambda` belongs to the
+thinned process, so :math:`\\int (1-p)\\lambda` must be restored. It is
+computed by trapezoid quadrature through
 :func:`~xtremax.point_processes.primitives.thinning.retention_compensator`.
+
+.. warning::
+    For **history-dependent** bases (Hawkes, renewal) this ``log_prob``
+    is a *pseudo-likelihood*: the base intensity is conditioned on the
+    *retained* events only, while :meth:`ThinningProcess.sample` thins a
+    full *latent* realisation whose unobserved (thinned-away) events also
+    excite the base. The decomposition is exact only for Poisson-family
+    bases (HPP/IPP), whose intensity does not depend on history. Fits
+    against history-dependent bases should be read as approximate.
+
 The retention callable is stored as a plain PyTree leaf so any
 parameters inside a learnable observation operator flow through
 ``eqx.filter_grad`` / NUTS.
@@ -31,6 +45,12 @@ from jax.typing import ArrayLike
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from xtremax.point_processes._history import EventHistory
+from xtremax.point_processes._results import MarkedSampleResult, SampleResult
+from xtremax.point_processes.operators._base import (
+    _n_positional_params,
+    call_sampler,
+    call_sequence_log_prob,
+)
 from xtremax.point_processes.primitives.thinning import (
     retention_compensator,
     thinning_retention_log_prob,
@@ -103,26 +123,26 @@ class ThinningProcess(eqx.Module):
         # correct quantity to multiply by the mark-averaged retention.
         target = getattr(self.base, "ground", self.base)
 
-        # Probe capability once — all downstream calls land on the same branch.
-        try:
-            _ = target.intensity(jnp.asarray(0.0), event_times, mask)
+        # Dispatch on the intensity method's signature — a Python-level
+        # inspect check outside any traced code. The previous
+        # ``try/except TypeError`` probing swallowed genuine
+        # ``TypeError``s raised *inside* user intensity code and
+        # silently rerouted them to the next fallback.
+        intensity = getattr(target, "intensity", None)
+        if intensity is not None:
+            n_params = _n_positional_params(intensity)
+            if n_params >= 3:  # (t, event_times, mask) — Hawkes, renewal
 
-            def _fn_history(t: Array, history: EventHistory) -> Array:
-                return target.intensity(t, event_times, mask)
+                def _fn_history(t: Array, history: EventHistory) -> Array:
+                    return target.intensity(t, event_times, mask)
 
-            return _fn_history
-        except TypeError:
-            pass
+                return _fn_history
+            if n_params >= 1:  # (t,) — IPP-style
 
-        try:
-            _ = target.intensity(jnp.asarray(0.0))
+                def _fn_ipp(t: Array, history: EventHistory) -> Array:
+                    return target.intensity(t)
 
-            def _fn_ipp(t: Array, history: EventHistory) -> Array:
-                return target.intensity(t)
-
-            return _fn_ipp
-        except TypeError:
-            pass
+                return _fn_ipp
 
         # Fallback: constant rate from ``target.rate`` (HPP).
         rate = getattr(target, "rate", None)
@@ -209,7 +229,11 @@ class ThinningProcess(eqx.Module):
             mark_sample_key=mark_sample_key,
             n_mark_samples=n_mark_samples,
         )
-        return base_logp + retention_term - correction
+        # The base log_prob subtracted the FULL compensator ∫λ; the thinned
+        # process owes only ∫pλ, so the difference ∫(1-p)λ is added back.
+        # (Subtracting it here — the old sign — made every fit maximize the
+        # wrong objective, off by exactly 2∫(1-p)λ.)
+        return base_logp + retention_term + correction
 
     def _call_base_log_prob(
         self,
@@ -217,17 +241,12 @@ class ThinningProcess(eqx.Module):
         mask: Bool[Array, ...],
         marks: Float[Array, ...] | None,
     ) -> Float[Array, ...]:
-        """Forward to the base ``log_prob`` matching its signature."""
-        if marks is not None:
-            try:
-                return self.base.log_prob(event_times, mask, marks)
-            except TypeError:
-                pass
-        try:
-            return self.base.log_prob(event_times, mask)
-        except TypeError:
-            n = jnp.sum(mask, axis=-1)
-            return self.base.log_prob(n)
+        """Forward to the base ``log_prob`` matching its signature.
+
+        Signature-based dispatch (see
+        :func:`~xtremax.point_processes.operators._base.call_sequence_log_prob`).
+        """
+        return call_sequence_log_prob(self.base, event_times, mask, marks=marks)
 
     def sample(
         self,
@@ -256,19 +275,29 @@ class ThinningProcess(eqx.Module):
         """
         key_base, key_thin = jax.random.split(key)
 
-        base_sample_kwargs = dict(base_kwargs)
-        if max_candidates is not None:
-            base_sample_kwargs["max_candidates"] = max_candidates
-        base_result = self.base.sample(key_base, max_events, **base_sample_kwargs)
+        # Base sampler signatures are not uniform; the shared helper
+        # dispatches on the base's actual parameter names (see
+        # :func:`~xtremax.point_processes.operators._base.call_sampler`).
+        base_result = call_sampler(
+            self.base,
+            key_base,
+            max_events,
+            max_candidates=max_candidates,
+            **base_kwargs,
+        )
 
-        # Disambiguate the 3-tuple result. IPP / HPP / Hawkes / Renewal
-        # return ``(times, mask, n_events)`` — a 0-D integer count in
-        # slot 3. Marked processes return ``(times, mask, marks)`` with
-        # an array aligned with ``times``. Anything else (e.g. a future
-        # operator returning ``(times, mask, aux_struct, marks)``) takes
-        # the last entry as marks.
+        # Disambiguate the base result by TYPE first — package samplers
+        # return :class:`SampleResult` (unmarked) or
+        # :class:`MarkedSampleResult` (marked), so the dispatch is
+        # unambiguous even for batched samplers. Bare tuples from
+        # user-supplied bases fall back to the legacy shape/dtype
+        # heuristic (0-D integer third element ⇒ event count).
         latent_marks = None
-        if len(base_result) == 2:
+        if isinstance(base_result, MarkedSampleResult):
+            latent_times, latent_mask, latent_marks = base_result
+        elif isinstance(base_result, SampleResult):
+            latent_times, latent_mask, _ = base_result
+        elif len(base_result) == 2:
             latent_times, latent_mask = base_result
         elif len(base_result) == 3:
             latent_times, latent_mask, third = base_result
@@ -335,6 +364,9 @@ class ThinningProcess(eqx.Module):
                 max_events=max_events,
                 mark_dim=mark_dim,
                 dtype=latent_times.dtype,
+                # Marks keep their own dtype — discrete (integer) marks
+                # were previously cast to the float time dtype.
+                mark_dtype=latent_marks_2d.dtype,
             )
             final_history, _ = jax.lax.scan(
                 step_marked,
@@ -352,10 +384,10 @@ class ThinningProcess(eqx.Module):
         )
         if latent_marks is None:
             n_retained = jnp.sum(final_history.mask).astype(jnp.int32)
-            return times, final_history.mask, n_retained
+            return SampleResult(times, final_history.mask, n_retained)
         # Marked base: return retained marks in the user's original
         # shape (scalar marks flatten the trailing ``1`` dimension).
         retained_marks = final_history.marks
         if latent_marks.ndim == 1:
             retained_marks = retained_marks[..., 0]
-        return times, final_history.mask, retained_marks
+        return MarkedSampleResult(times, final_history.mask, retained_marks)

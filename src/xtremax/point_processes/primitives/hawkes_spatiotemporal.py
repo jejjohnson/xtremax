@@ -47,6 +47,7 @@ from jax.scipy.special import erf
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from xtremax.point_processes._domain import RectangularDomain, TemporalDomain
+from xtremax.point_processes._results import SpatiotemporalSampleResult
 
 
 def _gaussian_kernel(
@@ -297,10 +298,12 @@ def stpp_hawkes_sample(
 
     Returns:
         ``(locations, times, mask, n_events)`` with ``times`` sorted
-        ascending. ``n_events`` is uncapped — if it exceeds
-        ``max_events`` the buffer is truncated; if it exceeds the
-        candidate budget the sampler stops early and the user should
-        increase ``max_events``.
+        ascending. ``n_events`` counts *accepted* events and can never
+        exceed ``max_events`` — acceptance stops once the buffer is
+        full, so a saturated buffer (``n_events == max_events``, equiv.
+        ``mask.sum() == max_events``) signals probable truncation and
+        the user should increase ``max_events``. There is no separate
+        uncapped attempt count.
     """
     mu_arr = jnp.asarray(mu)
     alpha_arr = jnp.asarray(alpha)
@@ -398,4 +401,4 @@ def stpp_hawkes_sample(
     # monotonically forward.
     locations = jnp.where(mask[:, None], locs, spatial.lo)
     times = jnp.where(mask, times, temporal.t1)
-    return locations, times, mask, count
+    return SpatiotemporalSampleResult(locations, times, mask, count)

@@ -14,14 +14,16 @@ module is a valid PyTree that ``optax`` can optimise through.
 An :class:`InhomogeneousPoissonProcess` additionally holds a
 ``log_intensity_fn``. If that function is itself an ``eqx.Module``
 (e.g. an MLP), its parameters become part of the PyTree automatically.
-If it is a plain Python callable, mark it as a static field via
-:meth:`InhomogeneousPoissonProcess.from_fn`.
+Plain Python callables are stored as ordinary (non-static) leaves too:
+:meth:`InhomogeneousPoissonProcess.from_fn` is a naming alias for the
+constructor, not a static-field marker. A plain-callable leaf breaks
+raw ``jax.jit`` / ``jax.vmap`` over the operator — use ``eqx.filter_*``
+transforms, or wrap the callable in an ``eqx.Module``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -29,8 +31,18 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
+# Redundant aliases mark deliberate re-exports (kept for backward
+# compatibility: Hawkes/renewal operators and user code import
+# GoodnessOfFit from this module).
+from xtremax.point_processes._results import (
+    GoodnessOfFit as GoodnessOfFit,
+    SampleResult as SampleResult,
+)
+from xtremax.point_processes.operators._base import (
+    GoodnessOfFitMixin,
+    LiveIntensityMixin,
+)
 from xtremax.point_processes.primitives import (
-    compensator_curve,
     hpp_cumulative_intensity,
     hpp_exceedance_log_prob,
     hpp_hazard,
@@ -42,19 +54,13 @@ from xtremax.point_processes.primitives import (
     hpp_return_period,
     hpp_sample,
     hpp_survival,
-    ipp_cumulative_hazard,
     ipp_cumulative_intensity,
     ipp_hazard,
     ipp_intensity,
-    ipp_inter_event_log_prob,
     ipp_log_prob,
     ipp_predict_count,
     ipp_sample_inversion,
     ipp_sample_thinning,
-    ipp_survival,
-    ks_statistic_exp1,
-    qq_exp1_quantiles,
-    time_rescaling_residuals,
 )
 
 
@@ -117,12 +123,17 @@ class PiecewiseConstantLogIntensity(eqx.Module):
         right_edges = self.bin_edges[1:]
         # Per bin, integrate rate × (min(b, right) − max(a, left))₊ over
         # all bins; vmap-friendly and differentiable through log_rates.
+        # The limits get an explicit trailing bin axis and the sum runs
+        # over that axis only, so batched limits return a batch of
+        # integrals — the previous all-axes sum silently collapsed
+        # batched limits into a single scalar.
         overlap = jnp.clip(
-            jnp.minimum(b, right_edges) - jnp.maximum(a, left_edges),
+            jnp.minimum(b[..., None], right_edges)
+            - jnp.maximum(a[..., None], left_edges),
             min=0.0,
             max=widths,
         )
-        return jnp.sum(rates * overlap)
+        return jnp.sum(rates * overlap, axis=-1)
 
     def max_intensity(self) -> Array:
         """Live ``λ_max = max(exp(log_rates))`` from the current leaves.
@@ -134,25 +145,12 @@ class PiecewiseConstantLogIntensity(eqx.Module):
         return jnp.exp(jnp.max(self.log_rates))
 
 
-class GoodnessOfFit(NamedTuple):
-    """Bundle of diagnostics returned by :meth:`goodness_of_fit`.
-
-    Attributes:
-        residuals: Time-rescaled inter-event residuals :math:`\\tau_i`.
-        mask: Real-event mask aligned with ``residuals``.
-        ks_statistic: Kolmogorov–Smirnov statistic versus ``Exp(1)``.
-        theoretical_quantiles: QQ-plot theoretical quantiles.
-        empirical_quantiles: QQ-plot empirical quantiles.
-    """
-
-    residuals: Float[Array, ...]
-    mask: Bool[Array, ...]
-    ks_statistic: Float[Array, ...]
-    theoretical_quantiles: Float[Array, ...]
-    empirical_quantiles: Float[Array, ...]
+# NOTE: ``GoodnessOfFit`` now lives in ``xtremax.point_processes._results``
+# and is imported above — existing ``from ...operators.temporal import
+# GoodnessOfFit`` call sites keep working unchanged.
 
 
-class HomogeneousPoissonProcess(eqx.Module):
+class HomogeneousPoissonProcess(GoodnessOfFitMixin, eqx.Module):
     """Homogeneous Poisson process on ``[0, T]``.
 
     Args:
@@ -261,38 +259,20 @@ class HomogeneousPoissonProcess(eqx.Module):
         return hpp_exceedance_log_prob(k, start_time, end_time, self.rate)
 
     # ------------------------------------------------------------
-    # Diagnostics
+    # Diagnostics — residuals/goodness_of_fit/compensator_curve come
+    # from GoodnessOfFitMixin via this hook.
     # ------------------------------------------------------------
 
-    def residuals(
+    def _compensator_fn(
         self,
         event_times: Float[Array, ...],
         mask: Bool[Array, ...],
-    ) -> tuple[Float[Array, ...], Bool[Array, ...]]:
-        """Time-rescaling residuals using ``Λ(t) = λ t``."""
-        return time_rescaling_residuals(event_times, mask, self.cumulative_intensity)
-
-    def goodness_of_fit(
-        self,
-        event_times: Float[Array, ...],
-        mask: Bool[Array, ...],
-    ) -> GoodnessOfFit:
-        """Bundle residuals + KS + QQ for plotting / hypothesis testing."""
-        residuals, res_mask = self.residuals(event_times, mask)
-        ks = ks_statistic_exp1(residuals, res_mask)
-        theoretical, empirical = qq_exp1_quantiles(residuals, res_mask)
-        return GoodnessOfFit(residuals, res_mask, ks, theoretical, empirical)
-
-    def compensator_curve(
-        self,
-        event_times: Float[Array, ...],
-        mask: Bool[Array, ...],
-    ) -> tuple[Float[Array, ...], Float[Array, ...]]:
-        """Pairs ``(t_i, Λ(t_i))`` for a compensator plot."""
-        return compensator_curve(event_times, mask, self.cumulative_intensity)
+    ) -> Callable[[Array], Array]:
+        del event_times, mask  # Λ(t) = λt needs no history
+        return self.cumulative_intensity
 
 
-class InhomogeneousPoissonProcess(eqx.Module):
+class InhomogeneousPoissonProcess(GoodnessOfFitMixin, LiveIntensityMixin, eqx.Module):
     """Inhomogeneous Poisson process on ``[0, T]``.
 
     Args:
@@ -322,9 +302,11 @@ class InhomogeneousPoissonProcess(eqx.Module):
         ``log_intensity_fn`` is stored as a regular PyTree leaf — **not**
         a static field. This way, when the function is itself an
         ``eqx.Module`` (e.g. an MLP), its array leaves participate in the
-        PyTree and are differentiable through :meth:`log_prob`. Plain
-        Python callables carry no array leaves and are therefore
-        effectively static with no extra ceremony.
+        PyTree and are differentiable through :meth:`log_prob`. A plain
+        Python callable stored as a leaf makes the operator incompatible
+        with raw ``jax.jit`` / ``jax.vmap`` (functions are not valid
+        traced leaves) — use ``eqx.filter_jit`` / ``eqx.filter_vmap`` or
+        wrap the callable in an ``eqx.Module``.
     """
 
     log_intensity_fn: Callable[[Array], Array]
@@ -439,37 +421,31 @@ class InhomogeneousPoissonProcess(eqx.Module):
 
         if default_interval and self.integrated_intensity is not None:
             return self.integrated_intensity
+
         integrate = getattr(self.log_intensity_fn, "integrate", None)
         if integrate is not None:
-            return integrate(a_arr, b_arr)
-        return ipp_predict_count(
-            a_arr,
-            b_arr,
-            self.log_intensity_fn,
-            n_points=self.n_integration_points,
-        )
+            live = integrate(a_arr, b_arr)
+        else:
+            live = ipp_predict_count(
+                a_arr,
+                b_arr,
+                self.log_intensity_fn,
+                n_points=self.n_integration_points,
+            )
+        if self.integrated_intensity is not None:
+            # Honour the pin for explicit full-window endpoints (e.g.
+            # ``cumulative_hazard(op.observation_window)``) so those
+            # queries agree with the Λ(T) used by log_prob. The
+            # selection is an elementwise ``where`` — jit/vmap-safe and
+            # shape-preserving for batched endpoints, where a Python
+            # bool guard would either trace-fail or collapse the batch
+            # to the scalar pin.
+            is_full_window = (a_arr == 0.0) & (b_arr == self.observation_window)
+            return jnp.where(is_full_window, self.integrated_intensity, live)
+        return live
 
-    def effective_lambda_max(self) -> Float[Array, ...]:
-        """Return the current thinning bound.
-
-        Prefers the pinned :attr:`lambda_max` (if set) over anything
-        derived from the module. Otherwise calls
-        ``log_intensity_fn.max_intensity()`` and raises if neither is
-        available. Reading the module every call keeps thinning
-        samplers safe after ``log_rates`` has been updated by an
-        optimiser.
-        """
-        if self.lambda_max is not None:
-            return self.lambda_max
-        max_intensity = getattr(self.log_intensity_fn, "max_intensity", None)
-        if max_intensity is not None:
-            return max_intensity()
-        raise ValueError(
-            "Cannot sample via thinning: no lambda_max pinned on the "
-            "operator and log_intensity_fn has no .max_intensity() "
-            "method. Pass a bound at construction, use a module that "
-            "exposes it, or call sample_inversion instead."
-        )
+    # ``effective_lambda_max`` comes from LiveIntensityMixin (pinned →
+    # ``.max_intensity()`` → raise).
 
     # ------------------------------------------------------------
     # Core distribution API
@@ -561,10 +537,13 @@ class InhomogeneousPoissonProcess(eqx.Module):
         t: Float[Array, ...],
         given_time: Float[Array, ...] | float = 0.0,
     ) -> Float[Array, ...]:
-        """:math:`S(t|s) = \\exp(-[\\Lambda(t) - \\Lambda(s)])`."""
-        return ipp_survival(
-            t, given_time, self.log_intensity_fn, n_points=self.n_integration_points
-        )
+        """:math:`S(t|s) = \\exp(-[\\Lambda(t) - \\Lambda(s)])`.
+
+        Routed through :meth:`effective_integrated_intensity` so the
+        result agrees with :meth:`log_prob` (closed-form ``.integrate``
+        when available; quadrature otherwise).
+        """
+        return jnp.exp(-self.cumulative_hazard(t, given_time))
 
     def hazard(self, t: Float[Array, ...]) -> Float[Array, ...]:
         """Hazard equals intensity for an IPP."""
@@ -575,23 +554,31 @@ class InhomogeneousPoissonProcess(eqx.Module):
         t: Float[Array, ...],
         given_time: Float[Array, ...] | float = 0.0,
     ) -> Float[Array, ...]:
-        """:math:`\\Lambda(t) - \\Lambda(s)`."""
-        return ipp_cumulative_hazard(
-            t, given_time, self.log_intensity_fn, n_points=self.n_integration_points
-        )
+        """:math:`\\Lambda(t) - \\Lambda(s)`.
+
+        Routed through :meth:`effective_integrated_intensity` (pinned →
+        closed-form ``.integrate`` → quadrature) so every integral-
+        consuming method uses the same integrator as :meth:`log_prob`.
+        """
+        return self.effective_integrated_intensity(given_time, t)
 
     def inter_event_log_prob(
         self,
         tau: Float[Array, ...],
         current_time: Float[Array, ...] | float = 0.0,
     ) -> Float[Array, ...]:
-        """Log density of next-event delay given last event at ``current_time``."""
-        return ipp_inter_event_log_prob(
-            tau,
-            current_time,
-            self.log_intensity_fn,
-            n_points=self.n_integration_points,
-        )
+        """Log density of next-event delay given last event at ``current_time``.
+
+        The compensator term is routed through
+        :meth:`effective_integrated_intensity` for consistency with
+        :meth:`log_prob`.
+        """
+        tau = jnp.asarray(tau)
+        s = jnp.asarray(current_time)
+        t_next = s + tau
+        log_lambda = self.log_intensity_fn(t_next)
+        cum = self.effective_integrated_intensity(s, t_next)
+        return jnp.where(tau >= 0.0, log_lambda - cum, -jnp.inf)
 
     # ------------------------------------------------------------
     # Predictions
@@ -602,41 +589,23 @@ class InhomogeneousPoissonProcess(eqx.Module):
         start_time: Float[Array, ...],
         end_time: Float[Array, ...],
     ) -> Float[Array, ...]:
-        """Expected count :math:`\\Lambda(\\text{end}) - \\Lambda(\\text{start})`."""
-        return ipp_predict_count(
-            start_time,
-            end_time,
-            self.log_intensity_fn,
-            n_points=self.n_integration_points,
-        )
+        """Expected count :math:`\\Lambda(\\text{end}) - \\Lambda(\\text{start})`.
+
+        Routed through :meth:`effective_integrated_intensity` so it
+        agrees exactly with :meth:`log_prob`'s compensator (closed form
+        when the intensity module exposes ``.integrate``).
+        """
+        return self.effective_integrated_intensity(start_time, end_time)
 
     # ------------------------------------------------------------
-    # Diagnostics
+    # Diagnostics — residuals/goodness_of_fit/compensator_curve come
+    # from GoodnessOfFitMixin via this hook.
     # ------------------------------------------------------------
 
-    def residuals(
+    def _compensator_fn(
         self,
         event_times: Float[Array, ...],
         mask: Bool[Array, ...],
-    ) -> tuple[Float[Array, ...], Bool[Array, ...]]:
-        """Time-rescaling residuals under :math:`\\Lambda(t)`."""
-        return time_rescaling_residuals(event_times, mask, self.cumulative_intensity)
-
-    def goodness_of_fit(
-        self,
-        event_times: Float[Array, ...],
-        mask: Bool[Array, ...],
-    ) -> GoodnessOfFit:
-        """Bundle residuals + KS + QQ for plotting / hypothesis testing."""
-        residuals, res_mask = self.residuals(event_times, mask)
-        ks = ks_statistic_exp1(residuals, res_mask)
-        theoretical, empirical = qq_exp1_quantiles(residuals, res_mask)
-        return GoodnessOfFit(residuals, res_mask, ks, theoretical, empirical)
-
-    def compensator_curve(
-        self,
-        event_times: Float[Array, ...],
-        mask: Bool[Array, ...],
-    ) -> tuple[Float[Array, ...], Float[Array, ...]]:
-        """Pairs ``(t_i, Λ(t_i))`` for a compensator plot."""
-        return compensator_curve(event_times, mask, self.cumulative_intensity)
+    ) -> Callable[[Array], Array]:
+        del event_times, mask  # the IPP compensator needs no history
+        return self.cumulative_intensity

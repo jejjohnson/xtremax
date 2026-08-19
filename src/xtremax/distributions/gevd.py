@@ -16,12 +16,16 @@ from jax.scipy.special import gammaln
 from numpyro.distributions import constraints
 from numpyro.distributions.util import promote_shapes, validate_sample
 
+from xtremax.distributions._support import concrete_sign
+from xtremax.primitives._common import GUMBEL_THRESHOLD
 from xtremax.primitives.gev import (
     gev_cdf,
     gev_icdf,
     gev_log_prob,
+    gev_log_survival,
     gev_mean,
     gev_return_level,
+    gev_survival,
 )
 
 
@@ -138,12 +142,15 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
             jnp.shape(self.loc), jnp.shape(self.scale), jnp.shape(self.concentration)
         )
 
-        # Numerical threshold for Gumbel approximation
-        self._gumbel_threshold = 1e-7
-
         super().__init__(batch_shape=batch_shape, validate_args=validate_args)
 
-    def sample(self, key: jnp.ndarray, sample_shape: tuple = ()) -> jnp.ndarray:
+    def sample(
+        self,
+        key: jnp.ndarray,
+        sample_shape: tuple = (),
+        *,
+        shape: tuple | None = None,
+    ) -> jnp.ndarray:
         """
         Generate samples from the GEVD using inverse transform sampling.
 
@@ -158,17 +165,30 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         Args:
             key: JAX random key for sampling
             sample_shape: Shape of samples to generate
+            shape: Keyword-only alias for ``sample_shape`` matching the
+                ``pipekit_cycle.ObservationNoise`` protocol's parameter
+                name (``sample(key, shape)``), so callers typed against
+                that protocol can pass it by keyword. Passing both a
+                non-empty ``sample_shape`` and ``shape`` raises
+                ``ValueError``.
 
         Returns:
             Array of samples from the GEVD
         """
+        if shape is not None:
+            if sample_shape != ():
+                raise ValueError(
+                    "Pass only one of 'sample_shape' (NumPyro spelling) or "
+                    "'shape' (ObservationNoise protocol spelling), not both."
+                )
+            sample_shape = shape
         check_prng_key(key)
-        shape = sample_shape + self.batch_shape
+        extended_shape = sample_shape + self.batch_shape
 
         # JAX's Uniform(0, 1) sampler can emit exact 0 or 1 at the
         # endpoints; passing those to icdf yields -inf/+inf and poisons
         # downstream computations. Clamp away from the endpoints.
-        uniform_samples = dist.Uniform(0.0, 1.0).sample(key, shape)
+        uniform_samples = dist.Uniform(0.0, 1.0).sample(key, extended_shape)
         eps = jnp.finfo(uniform_samples.dtype).eps
         uniform_samples = jnp.clip(uniform_samples, eps, 1.0 - eps)
 
@@ -195,17 +215,34 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
 
         Returns:
             Constraint object reflecting the shape-dependent support:
-            - ξ > 0: [μ - σ/ξ, +∞)
-            - ξ = 0: (-∞, +∞)
-            - ξ < 0: (-∞, μ - σ/ξ]
+            - ξ > 0: [μ - σ/ξ, +∞) → ``greater_than_eq(lower_bound)``
+              (closed, matching the old ``interval`` membership; the
+              density vanishes at the endpoint so ``log_prob`` is -inf)
+            - ξ = 0: (-∞, +∞) → ``real``
+            - ξ < 0: (-∞, μ - σ/ξ] → ``less_than_eq(upper_bound)`` (closed:
+              the endpoint density is finite at ξ = -1 and diverges for
+              ξ < -1, so the endpoint is a genuine support point)
 
-        ``constraints.interval(lower_bound, upper_bound)`` resolves to
-        the unbounded real line when both bounds are ±∞ (ξ = 0) and to
-        the correct half-bounded interval otherwise — so
-        ``validate_args=True`` actually rejects samples outside the
-        true support instead of letting ``log_prob`` return -∞.
+        The constraint kind is dispatched on the *statically known* sign of
+        the concentration so that ``biject_to(support)`` returns a bijector
+        that genuinely handles the half-unbounded geometry — the previous
+        ``interval(lo, hi)`` construction mapped to ``Sigmoid ∘ Affine``
+        which yields inf/nan when a bound is infinite, breaking every
+        NUTS/SVI model that used this distribution as a latent site.
+
+        When the concentration is traced (inside ``jit``/inference) or a
+        mixed-sign batch, the sign is not statically known and the support
+        falls back to ``constraints.real``: membership then accepts points
+        outside the true parameter-dependent support, but ``log_prob``
+        returns ``-inf`` there, so inference remains correct (init simply
+        rejects such draws).
         """
-        return constraints.interval(self.lower_bound(), self.upper_bound())
+        sign = concrete_sign(self.concentration)
+        if sign == 1:
+            return constraints.greater_than_eq(self.lower_bound())
+        if sign == -1:
+            return constraints.less_than_eq(self.upper_bound())
+        return constraints.real
 
     def upper_bound(self) -> jnp.ndarray:
         """
@@ -264,7 +301,7 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         """
         loc, scale, shape = self.loc, self.scale, self.concentration
 
-        is_gumbel = jnp.abs(shape) < self._gumbel_threshold
+        is_gumbel = jnp.abs(shape) < GUMBEL_THRESHOLD
         safe_shape = jnp.where(is_gumbel, 1.0, shape)
         has_interior_mode = shape > -1.0
         safe_base = jnp.where(has_interior_mode, 1.0 + shape, 1.0)
@@ -301,7 +338,7 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         """
         _loc, scale, shape = self.loc, self.scale, self.concentration
 
-        is_gumbel = jnp.abs(shape) < self._gumbel_threshold
+        is_gumbel = jnp.abs(shape) < GUMBEL_THRESHOLD
         var_exists = shape < 0.5
 
         def gumbel_variance():
@@ -310,13 +347,37 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         def gevd_variance():
             gamma1 = jnp.exp(gammaln(1.0 - 2.0 * shape))
             gamma2 = jnp.exp(2.0 * gammaln(1.0 - shape))
-            return (scale**2 / shape**2) * (gamma1 - gamma2)
+            # Substitute a safe divisor where the Gumbel branch is taken:
+            # with Python-float parameters ``shape**2`` divides eagerly
+            # (both jnp.where branches evaluate), so ξ = 0 raised
+            # ZeroDivisionError before the mask could select the branch.
+            safe_shape = jnp.where(is_gumbel, 1.0, shape)
+            return (scale**2 / safe_shape**2) * (gamma1 - gamma2)
 
         var_gumbel = gumbel_variance()
         var_gevd = gevd_variance()
 
         result = jnp.where(is_gumbel, var_gumbel, var_gevd)
         return jnp.where(var_exists, result, jnp.inf)
+
+    def covariance(self) -> jnp.ndarray:
+        """Marginal variance broadcast to the batch shape.
+
+        Structural seam for ``pipekit_cycle.ObservationNoise`` (which
+        requires ``covariance()`` and ``sample(key, shape)``): together
+        with the existing :meth:`sample`, this lets the distribution act
+        as a non-Gaussian observation-error model in data-assimilation
+        experiments — without xtremax importing pipekit (see
+        ``docs/interop.md``). The observation errors are treated as
+        independent per batch element, so the "covariance" is the
+        marginal variance vector rather than a dense matrix; consuming
+        analysis steps interpret it as a diagonal.
+
+        Returns:
+            Variance broadcast to ``batch_shape`` (``+inf`` where the
+            variance does not exist, i.e. ξ >= 1/2).
+        """
+        return jnp.broadcast_to(jnp.asarray(self.variance), self.batch_shape)
 
     def kurtosis(self) -> jnp.ndarray:
         """
@@ -334,7 +395,7 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         """
         shape = self.concentration
 
-        is_gumbel = jnp.abs(shape) < self._gumbel_threshold
+        is_gumbel = jnp.abs(shape) < GUMBEL_THRESHOLD
         kurt_exists = shape < 0.25
 
         def gumbel_kurtosis():
@@ -358,7 +419,10 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         kurt_gevd = gevd_kurtosis()
 
         result = jnp.where(is_gumbel, kurt_gumbel, kurt_gevd)
-        return jnp.where(kurt_exists, result, jnp.inf)
+        # NaN, not inf: beyond ξ = 1/4 the standardized fourth moment is
+        # undefined (the raw moment diverges), unlike the variance which
+        # genuinely diverges to +inf. One sentinel convention repo-wide.
+        return jnp.where(kurt_exists, result, jnp.nan)
 
     def skew(self) -> jnp.ndarray:
         """
@@ -374,7 +438,7 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         """
         shape = self.concentration
 
-        is_gumbel = jnp.abs(shape) < self._gumbel_threshold
+        is_gumbel = jnp.abs(shape) < GUMBEL_THRESHOLD
         skew_exists = shape < 1.0 / 3.0
 
         def gumbel_skewness():
@@ -389,13 +453,17 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
             mu2 = g2 - g1**2
             mu3 = g3 - 3.0 * g1 * g2 + 2.0 * g1**3
 
-            return mu3 / jnp.power(mu2, 1.5)
+            # X = μ + (σ/ξ)(W − 1): the third central moment carries (σ/ξ)³,
+            # so the standardized skew picks up sign(ξ)³ = sign(ξ).
+            return jnp.sign(shape) * mu3 / jnp.power(mu2, 1.5)
 
         skew_gumbel = gumbel_skewness()
         skew_gevd = gevd_skewness()
 
         result = jnp.where(is_gumbel, skew_gumbel, skew_gevd)
-        return jnp.where(skew_exists, result, jnp.inf)
+        # NaN, not inf: beyond ξ = 1/3 the standardized third moment is
+        # undefined, unlike the variance which genuinely diverges to +inf.
+        return jnp.where(skew_exists, result, jnp.nan)
 
     def entropy(self) -> jnp.ndarray:
         r"""Differential entropy of the GEV distribution (in nats).
@@ -422,22 +490,9 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         Returns:
             Survival probabilities
         """
-        shape = jnp.asarray(self.concentration)
-        is_gumbel = jnp.abs(shape) < self._gumbel_threshold
-        xi = jnp.where(is_gumbel, 1.0, shape)
-        z = (value - self.loc) / self.scale
-
-        gumbel = -jnp.expm1(-jnp.exp(-z))
-
-        t = 1.0 + xi * z
-        valid = t > 0.0
-        t_safe = jnp.where(valid, t, 1.0)
-        log_cdf = -jnp.power(t_safe, -1.0 / xi)
-        gev_inside = -jnp.expm1(log_cdf)
-        boundary = jnp.where(shape > 0, 1.0, 0.0)
-        gevd = jnp.where(valid, gev_inside, boundary)
-
-        return jnp.where(is_gumbel, gumbel, gevd)
+        # Delegate to the stable primitive so the class and functional APIs
+        # share the smooth ξ→0 handling (no threshold to drift against).
+        return gev_survival(value, self.loc, self.scale, self.concentration)
 
     def log_survival_function(self, value: jnp.ndarray) -> jnp.ndarray:
         """
@@ -449,22 +504,8 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         Returns:
             Survival probabilities
         """
-        shape = jnp.asarray(self.concentration)
-        is_gumbel = jnp.abs(shape) < self._gumbel_threshold
-        xi = jnp.where(is_gumbel, 1.0, shape)
-        z = (value - self.loc) / self.scale
-
-        gumbel = jnp.log(-jnp.expm1(-jnp.exp(-z)))
-
-        t = 1.0 + xi * z
-        valid = t > 0.0
-        t_safe = jnp.where(valid, t, 1.0)
-        log_cdf = -jnp.power(t_safe, -1.0 / xi)
-        gev_inside = jnp.log(-jnp.expm1(log_cdf))
-        boundary = jnp.where(shape > 0, 0.0, -jnp.inf)
-        gevd = jnp.where(valid, gev_inside, boundary)
-
-        return jnp.where(is_gumbel, gumbel, gevd)
+        # Delegate to the stable primitive (smooth ξ→0, matches the class cdf).
+        return gev_log_survival(value, self.loc, self.scale, self.concentration)
 
     def hazard_rate(self, value: jnp.ndarray) -> jnp.ndarray:
         """
@@ -509,7 +550,12 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         Returns:
             Tail index (1/ξ for ξ > 0, ∞ for ξ ≤ 0)
         """
-        return jnp.where(self.concentration > 0, 1.0 / self.concentration, jnp.inf)
+        shape = jnp.asarray(self.concentration)
+        # Safe divisor: with Python-float parameters the division happens
+        # eagerly in both jnp.where branches, so ξ = 0 raised
+        # ZeroDivisionError before the mask applied.
+        safe_shape = jnp.where(shape > 0, shape, 1.0)
+        return jnp.where(shape > 0, 1.0 / safe_shape, jnp.inf)
 
     def exceedance_probability(self, threshold: jnp.ndarray) -> jnp.ndarray:
         """
@@ -561,6 +607,10 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         # tails where most of the conditional mass lives near p = 1.
         n_grid = 1024
         p0 = self.cdf(threshold_arr)
+        # Joint batch of threshold and distribution parameters — the grid
+        # axis is appended after this, so every per-batch quantity must be
+        # broadcast to it before gaining the trailing axis.
+        batch = jnp.shape(p0)
         s_u = 1.0 - p0
         # Floor S(u) so log is finite; the NaN mask below drops results
         # whose threshold is effectively at or beyond the upper support.
@@ -570,22 +620,24 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         # and ``icdf(0)`` diverges to -∞ for unbounded-below branches.
         s_u_safe = jnp.clip(s_u, 1e-12, 1.0 - 1e-6)
         log_s_u = jnp.log(s_u_safe)
-        # Lower endpoint of the log-y integration range: step ~20
-        # e-folds below log_s_u so the grid always captures the bulk
-        # of the tail-integrand mass for ξ < 1 AND stays strictly
-        # ascending (``v_grid`` dx > 0). Without this, a fixed floor
-        # like log(1e-6) would run backward when S(u) < 1e-6 and
-        # trapezoid would sign-flip the result. The downstream
-        # ``-jnp.log1p(-y_grid)`` computation is accurate down to
-        # float32 subnormals, so we can safely push y well below
-        # eps(float32) without the precision blow-up that a raw
-        # ``log(1 - y)`` route would hit.
+        # Lower endpoint of the log-y integration range: step ~20 e-folds
+        # below log_s_u so the grid always captures the bulk of the
+        # tail-integrand mass AND stays strictly ascending (``v_grid``
+        # dx > 0). Without this, a fixed floor like log(1e-6) would run
+        # backward when S(u) < 1e-6 and trapezoid would sign-flip the
+        # result. The mass below the truncation point — which behaves
+        # like y^{1-ξ} and reached ~14% of the total at ξ = 0.9 — is
+        # added back analytically below rather than by widening the
+        # span: a 1/(1-ξ)-scaled span would push ``exp(v_grid)`` under
+        # the float32 exp underflow (~e⁻¹⁰³) and produce 0·inf = NaN in
+        # the integrand. The ``-jnp.log1p(-y_grid)`` computation below
+        # is accurate down to float32 subnormals.
         span = jnp.asarray(20.0, dtype=log_s_u.dtype)
         log_y_min = log_s_u - span
 
         unit = jnp.linspace(0.0, 1.0, n_grid)
         log_s_u_exp = jnp.expand_dims(log_s_u, axis=-1)
-        log_y_min_exp = jnp.expand_dims(log_y_min, axis=-1)
+        log_y_min_exp = jnp.expand_dims(jnp.broadcast_to(log_y_min, batch), axis=-1)
         # v grid ascending from log_y_min up to log S(u). If log_y_min
         # >= log_s_u (untrustworthy regime; mask below returns NaN),
         # the grid is degenerate but numerically bounded.
@@ -598,15 +650,48 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
         # downstream ``log(p)`` in ``gev_icdf`` loses that — icdf comes
         # out finite but wildly wrong and the quadrature sign-flips.
         # ``log1p(-y)`` is designed for exactly this small-y regime.
+        # Parameters are broadcast to the joint batch and given the same
+        # trailing grid axis as ``neg_log_q`` — evaluating batched
+        # (..., n_grid) grids against unexpanded (batch,) parameters
+        # raised a broadcasting error.
         neg_log_q = -jnp.log1p(-y_grid)
-        is_gumbel = jnp.abs(shape) < self._gumbel_threshold
+        is_gumbel = jnp.abs(shape) < GUMBEL_THRESHOLD
         xi = jnp.where(is_gumbel, 1.0, shape)
-        gumbel_x = self.loc - self.scale * jnp.log(neg_log_q)
-        gev_x = self.loc + (self.scale / xi) * (jnp.power(neg_log_q, -xi) - 1.0)
-        x_grid = jnp.where(is_gumbel, gumbel_x, gev_x)
+        loc_e = jnp.expand_dims(jnp.broadcast_to(self.loc, batch), axis=-1)
+        scale_e = jnp.expand_dims(jnp.broadcast_to(self.scale, batch), axis=-1)
+        xi_e = jnp.expand_dims(jnp.broadcast_to(xi, batch), axis=-1)
+        gum_e = jnp.expand_dims(jnp.broadcast_to(is_gumbel, batch), axis=-1)
+        gumbel_x = loc_e - scale_e * jnp.log(neg_log_q)
+        gev_x = loc_e + (scale_e / xi_e) * (jnp.power(neg_log_q, -xi_e) - 1.0)
+        x_grid = jnp.where(gum_e, gumbel_x, gev_x)
 
         integrand = x_grid * y_grid  # F⁻¹(1-y) · y, multiplied by dv=dy/y
         numerator = jnp.trapezoid(integrand, x=v_grid, axis=-1)
+
+        # Closed-form remainder for the truncated (0, y_c] tail with
+        # y_c = exp(log_y_min) = S(u)·e⁻²⁰. There -log(1-y) ≈ y to ~y_c
+        # relative accuracy, so
+        #   ξ ≠ 0: x(y) ≈ (μ - σ/ξ) + (σ/ξ)·y^{-ξ}
+        #          → ∫₀^{y_c} x dy = (μ - σ/ξ)·y_c + (σ/ξ)·y_c^{1-ξ}/(1-ξ)
+        #   ξ = 0: x(y) ≈ μ - σ·log y
+        #          → ∫₀^{y_c} x dy = y_c·(μ - σ·(log y_c - 1))
+        # For light tails the remainder is negligible; at ξ = 0.9 it is
+        # ~14% of the numerator — dropping it was the truncation bias.
+        loc_b = jnp.broadcast_to(self.loc, batch)
+        scale_b = jnp.broadcast_to(self.scale, batch)
+        xi_b = jnp.broadcast_to(xi, batch)
+        gum_b = jnp.broadcast_to(is_gumbel, batch)
+        shape_b = jnp.broadcast_to(shape, batch)
+        y_c = jnp.exp(log_y_min)
+        # Sanitize the discarded branch: 1-ξ ≤ 0 (ξ ≥ 1, masked to NaN
+        # below) and the Gumbel branch would otherwise divide by zero.
+        one_minus_xi = jnp.where(gum_b | (shape_b >= 1.0), 1.0, 1.0 - xi_b)
+        gev_rem = (loc_b - scale_b / xi_b) * y_c + (scale_b / xi_b) * jnp.power(
+            y_c, one_minus_xi
+        ) / one_minus_xi
+        gumbel_rem = y_c * (loc_b - scale_b * (log_y_min - 1.0))
+        numerator = numerator + jnp.where(gum_b, gumbel_rem, gev_rem)
+
         mean_conditional = numerator / s_u_safe
         mean_excess = mean_conditional - threshold_arr
 
@@ -670,9 +755,8 @@ class GeneralizedExtremeValueDistribution(dist.Distribution):
     def expand(self, batch_shape: tuple[int, ...]) -> dist.Distribution:
         """Expand to ``batch_shape`` by reconstructing via ``__init__``.
 
-        Going through the constructor repopulates ``_gumbel_threshold`` on
-        the returned instance so downstream methods that dispatch on it
-        (log_prob/cdf/icdf/mean/entropy) keep working after expansion.
+        Going through the constructor (rather than an ``ExpandedDistribution``
+        wrapper) keeps every EVT method available on the returned instance.
         """
         batch_shape = tuple(batch_shape)
         if batch_shape == self.batch_shape:

@@ -105,6 +105,154 @@ class TestSpatial:
         del before
 
 
+class TestRNGDiscipline:
+    """#70 — per-variable salted streams and Generator-API unification."""
+
+    def test_cross_variable_independence(self):
+        """Default (equal) seeds must not make nominally independent
+        variables comonotonic. Previously temp and wind shared the same
+        legacy `random_state=42` uniform stream, giving corr ≈ 0.9992."""
+        gmst = generate_gmst_trajectory(n_years=200, seed=0)
+        space = generate_spatial_field(n_sites=1, seed=0)
+        mu = compute_climate_signal(space, gmst, base_val=20.0, coeffs={"gmst": 1.0})
+        temp = simulate_temp_extremes(mu)  # default seed
+        wind = simulate_wind_extremes(space, gmst)  # default seed
+
+        # Detrend by removing the shared GMST-driven signal component:
+        # correlate the residuals around each variable's own year-mean.
+        t = temp["tmax"].values[:, 0] - np.asarray(mu.values)[:, 0]
+        w = wind["wind_max"].values[:, 0] - (15.0 + 0.5 * gmst.values)
+        corr = np.corrcoef(t, w)[0, 1]
+        assert abs(corr) < 0.15
+
+    def test_same_seed_reproducible(self):
+        gmst = generate_gmst_trajectory(n_years=10, seed=0)
+        space = generate_spatial_field(n_sites=5, seed=0)
+        a = simulate_wind_extremes(space, gmst, seed=7)
+        b = simulate_wind_extremes(space, gmst, seed=7)
+        np.testing.assert_array_equal(a["wind_max"].values, b["wind_max"].values)
+        c = simulate_wind_extremes(space, gmst, seed=8)
+        assert not np.array_equal(a["wind_max"].values, c["wind_max"].values)
+
+
+class TestCleanupBatch:
+    """#71 — assorted API-hygiene regressions."""
+
+    def test_invalid_trend_type_raises_value_error(self):
+        """Previously an invalid trend_type fell through every branch and
+        crashed with UnboundLocalError on `trend`."""
+        with pytest.raises(ValueError, match="trend_type"):
+            generate_gmst_trajectory(trend_type="quadratic")  # type: ignore[arg-type]
+
+    def test_augment_spatial_features_does_not_mutate_input(self):
+        from xtremax.simulations.spatial import (
+            augment_spatial_features,
+            create_iberian_domain,
+        )
+
+        ds = create_iberian_domain(res_deg=0.5, seed=0)
+        before = set(ds.data_vars)
+        out = augment_spatial_features(ds)
+        assert set(ds.data_vars) == before  # input untouched
+        assert "slope" in out.data_vars and "roughness" in out.data_vars
+
+    def test_spatial_features_handle_transposed_input(self):
+        """Codex round on #86: a dataset storing its variables as
+        (lon, lat) must produce the same labeled features as the
+        (lat, lon) layout — the extractors transpose by name."""
+        from xtremax.simulations.spatial import (
+            augment_spatial_features,
+            create_iberian_domain,
+        )
+
+        ds = create_iberian_domain(res_deg=0.5, seed=0)
+        ds_t = ds.transpose("lon", "lat")
+        out = augment_spatial_features(ds)
+        out_t = augment_spatial_features(ds_t)
+        for var in ("dist_to_coast", "slope", "aspect", "roughness"):
+            np.testing.assert_allclose(
+                out[var].transpose("lat", "lon").values,
+                out_t[var].transpose("lat", "lon").values,
+                equal_nan=True,
+            )
+
+    def test_simulators_reject_transposed_parameter_fields(self):
+        """Blind `.values.transpose()` used to silently mislabel data when
+        inputs arrived with unexpected dims; named transposes now raise."""
+        gmst = generate_gmst_trajectory(n_years=10, seed=0)
+        space = generate_spatial_field(n_sites=5, seed=0)
+        bad_gmst = gmst.rename({"year": "t"})
+        with pytest.raises((ValueError, KeyError)):
+            simulate_wind_extremes(space, bad_gmst, seed=0)
+
+
+class TestSimulatorStatistics:
+    """#75 — statistical property tests with fixed seeds and generous
+    tolerances."""
+
+    def test_gev_samples_respect_weibull_upper_bound(self):
+        """shape = -0.1 (Weibull domain) bounds samples above by
+        μ − σ/ξ = μ + 10σ. A scipy sign-convention slip would produce a
+        heavy upper tail instead and blow through the bound."""
+        gmst = generate_gmst_trajectory(n_years=200, seed=0)
+        space = generate_spatial_field(n_sites=10, seed=0)
+        mu = compute_climate_signal(space, gmst, base_val=20.0, coeffs={"gmst": 1.0})
+        scale, shape = 1.5, -0.1
+        ds = simulate_temp_extremes(mu, scale=scale, shape=shape, seed=0)
+        upper = np.asarray(mu.values) + scale / abs(shape)
+        assert np.all(ds["tmax"].values <= upper + 1e-6)
+
+    def test_gamma_intensity_mean_matches_cc_scaling(self):
+        """rx1day is Gamma with mean equal to the Clausius-Clapeyron-
+        scaled location parameter; the empirical mean ratio over all
+        cells must be ≈ 1."""
+        gmst = generate_gmst_trajectory(n_years=200, seed=0)
+        space = generate_spatial_field(n_sites=20, seed=0)
+        ds = simulate_precip_extremes(space, gmst, seed=0)
+
+        base_intensity = 40.0 + 0.01 * space["elevation"]
+        loc_intensity = (base_intensity * (1.0 + 0.07 * gmst)).transpose("year", "site")
+        ratio = ds["rx1day"].values / loc_intensity.values
+        # 4000 cells, per-cell sd of the ratio is 0.5 (Gamma shape 4).
+        assert abs(float(ratio.mean()) - 1.0) < 0.05
+
+
+class TestSpatialGeometry:
+    """#75 — mask geometry, elevation clipping, and output dims/coords
+    (previously entirely untested)."""
+
+    def test_domain_geometry_and_clipping(self):
+        from xtremax.simulations.spatial import create_iberian_domain
+
+        ds = create_iberian_domain(res_deg=0.25, seed=0)
+        land_fraction = float(ds["mask"].mean())
+        assert 0.1 < land_fraction < 0.9
+        assert float(ds["elevation"].min()) >= -100.0
+        assert float(ds["elevation"].max()) <= 3400.0
+        # Ocean is flagged at exactly -100 m.
+        assert float(ds["elevation"].where(~ds["mask"]).max()) == -100.0
+
+    def test_advanced_climate_signal_dims_and_masking(self):
+        from xtremax.simulations.spatial import (
+            augment_spatial_features,
+            compute_advanced_climate_signal,
+            create_iberian_domain,
+        )
+
+        ds = augment_spatial_features(create_iberian_domain(res_deg=0.5, seed=0))
+        gmst = generate_gmst_trajectory(n_years=5, seed=0)
+        out = compute_advanced_climate_signal(ds, gmst)
+
+        for var in ("mu_tmax", "mu_precip"):
+            assert set(out[var].dims) == {"year", "lat", "lon"}
+            assert out[var].sizes["year"] == 5
+            # Ocean cells are masked to NaN, land cells are finite.
+            ocean = out[var].where(~ds["mask"])
+            land = out[var].where(ds["mask"])
+            assert bool(ocean.isnull().all())
+            assert bool(np.isfinite(land).any())
+
+
 class TestExtremes:
     def test_spatial_field(self):
         ds = generate_spatial_field(n_sites=20, seed=0)

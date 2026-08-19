@@ -18,12 +18,15 @@ from numpyro.distributions import constraints
 from numpyro.distributions.util import promote_shapes, validate_sample
 
 from xtremax._rng import check_prng_key
+from xtremax.distributions._support import concrete_sign
 from xtremax.primitives.gpd import (
     gpd_cdf,
     gpd_icdf,
     gpd_log_prob,
+    gpd_log_survival,
     gpd_mean,
     gpd_return_level,
+    gpd_survival,
 )
 
 
@@ -159,12 +162,15 @@ class GeneralizedParetoDistribution(dist.Distribution):
             jnp.shape(self.scale), jnp.shape(self.concentration)
         )
 
-        # Numerical threshold for exponential approximation (ξ ≈ 0)
-        self._exponential_threshold = 1e-8
-
         super().__init__(batch_shape=batch_shape, validate_args=validate_args)
 
-    def sample(self, key: jnp.ndarray, sample_shape: tuple = ()) -> jnp.ndarray:
+    def sample(
+        self,
+        key: jnp.ndarray,
+        sample_shape: tuple = (),
+        *,
+        shape: tuple | None = None,
+    ) -> jnp.ndarray:
         """
         Generate samples from the GPD using inverse transform sampling.
 
@@ -179,17 +185,30 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Args:
             key: JAX random key for sampling
             sample_shape: Shape of samples to generate
+            shape: Keyword-only alias for ``sample_shape`` matching the
+                ``pipekit_cycle.ObservationNoise`` protocol's parameter
+                name (``sample(key, shape)``), so callers typed against
+                that protocol can pass it by keyword. Passing both a
+                non-empty ``sample_shape`` and ``shape`` raises
+                ``ValueError``.
 
         Returns:
             Array of samples from the GPD (all within support)
         """
+        if shape is not None:
+            if sample_shape != ():
+                raise ValueError(
+                    "Pass only one of 'sample_shape' (NumPyro spelling) or "
+                    "'shape' (ObservationNoise protocol spelling), not both."
+                )
+            sample_shape = shape
         check_prng_key(key)
-        shape = sample_shape + self.batch_shape
+        extended_shape = sample_shape + self.batch_shape
 
         # JAX's Uniform(0, 1) sampler can emit exact 0 or 1 at the
         # endpoints; passing those to icdf yields -inf/+inf and poisons
         # downstream computations. Clamp away from the endpoints.
-        uniform_samples = dist.Uniform(0.0, 1.0).sample(key, shape)
+        uniform_samples = dist.Uniform(0.0, 1.0).sample(key, extended_shape)
         eps = jnp.finfo(uniform_samples.dtype).eps
         uniform_samples = jnp.clip(uniform_samples, eps, 1.0 - eps)
 
@@ -216,16 +235,24 @@ class GeneralizedParetoDistribution(dist.Distribution):
 
         Returns:
             Constraint object reflecting the shape-dependent support:
-            - ξ ≥ 0: [0, +∞)
-            - ξ < 0: [0, -σ/ξ]
+            - ξ ≥ 0: [0, +∞) → ``nonnegative``
+            - ξ < 0: [0, -σ/ξ] → ``interval(0, upper_bound)``
 
-        ``constraints.interval(0, upper_bound)`` resolves to nonnegative
-        semantics when the upper bound is +∞ (ξ ≥ 0) and to a proper
-        bounded interval when ξ < 0 — so ``validate_args=True`` actually
-        rejects samples above the finite upper endpoint instead of
-        silently deferring to ``log_prob`` returning -∞.
+        Only the ξ < 0 case uses ``interval`` — its bounds are finite, so
+        ``biject_to`` maps it to a well-behaved ``Sigmoid ∘ Affine``. For
+        ξ ≥ 0 the old ``interval(0, inf)`` construction made ``biject_to``
+        return inf, breaking NUTS/SVI models with a GPD latent site;
+        ``constraints.nonnegative`` has a registered exp-bijector and
+        accepts the closed endpoint x = 0.
+
+        When the concentration is traced (inside ``jit``/inference) or a
+        mixed-sign batch, the support falls back to ``nonnegative`` — the
+        lower bound is parameter-independent, and points above a finite
+        ξ < 0 upper endpoint are handled by ``log_prob`` returning -inf.
         """
-        return constraints.interval(jnp.zeros_like(self.scale), self.upper_bound())
+        if concrete_sign(self.concentration) == -1:
+            return constraints.interval(jnp.zeros_like(self.scale), self.upper_bound())
+        return constraints.nonnegative
 
     def upper_bound(self) -> jnp.ndarray:
         """
@@ -263,13 +290,18 @@ class GeneralizedParetoDistribution(dist.Distribution):
         """
         Compute the mode of the GPD.
 
-        The mode is always 0 for the GPD, representing the threshold
-        (most likely exceedance is just above the threshold).
+        For ξ > -1 the density is monotone decreasing from x = 0, so the
+        mode is 0 (the threshold). For ξ < -1 the density *increases*
+        toward the finite upper endpoint -σ/ξ, so the mode is the upper
+        endpoint itself (at ξ = -1, the uniform case, every point is
+        modal and 0 is returned by convention).
 
         Returns:
-            Mode (always 0)
+            Mode: 0 for ξ ≥ -1, the upper endpoint -σ/ξ for ξ < -1
         """
-        return jnp.zeros_like(self.scale)
+        return jnp.where(
+            self.concentration < -1.0, self.upper_bound(), jnp.zeros_like(self.scale)
+        )
 
     @property
     def variance(self) -> jnp.ndarray:
@@ -298,6 +330,25 @@ class GeneralizedParetoDistribution(dist.Distribution):
 
         return jnp.where(var_exists, var_val, jnp.inf)
 
+    def covariance(self) -> jnp.ndarray:
+        """Marginal variance broadcast to the batch shape.
+
+        Structural seam for ``pipekit_cycle.ObservationNoise`` (which
+        requires ``covariance()`` and ``sample(key, shape)``): together
+        with the existing :meth:`sample`, this lets the distribution act
+        as a non-Gaussian observation-error model in data-assimilation
+        experiments — without xtremax importing pipekit (see
+        ``docs/interop.md``). The observation errors are treated as
+        independent per batch element, so the "covariance" is the
+        marginal variance vector rather than a dense matrix; consuming
+        analysis steps interpret it as a diagonal.
+
+        Returns:
+            Variance broadcast to ``batch_shape`` (``+inf`` where the
+            variance does not exist, i.e. ξ >= 1/2).
+        """
+        return jnp.broadcast_to(jnp.asarray(self.variance), self.batch_shape)
+
     def kurtosis(self) -> jnp.ndarray:
         """
         Compute the excess kurtosis of the GPD.
@@ -314,18 +365,16 @@ class GeneralizedParetoDistribution(dist.Distribution):
         # Kurtosis exists for ξ < 1/4
         kurt_exists = shape < 0.25
 
-        # Handle exponential case (ξ = 0) separately
-        is_exponential = jnp.abs(shape) < self._exponential_threshold
-        exponential_kurtosis = 6.0  # Known value for exponential distribution
-
-        # General formula for ξ ≠ 0
+        # The rational formula is exact and smooth at ξ = 0 (evaluating to
+        # the exponential value 6), so no separate branch or threshold is
+        # needed — the old class-local 1e-8 threshold is gone.
         numerator = 3.0 * (1.0 - 2.0 * shape) * (2.0 * shape**2 + shape + 3.0)
         denominator = (1.0 - 3.0 * shape) * (1.0 - 4.0 * shape)
-        general_kurtosis = numerator / denominator - 3.0
+        kurtosis_val = numerator / denominator - 3.0
 
-        kurtosis_val = jnp.where(is_exponential, exponential_kurtosis, general_kurtosis)
-
-        return jnp.where(kurt_exists, kurtosis_val, jnp.inf)
+        # NaN, not inf: beyond ξ = 1/4 the standardized fourth moment is
+        # undefined, unlike the variance which genuinely diverges to +inf.
+        return jnp.where(kurt_exists, kurtosis_val, jnp.nan)
 
     def skew(self) -> jnp.ndarray:
         """
@@ -343,18 +392,16 @@ class GeneralizedParetoDistribution(dist.Distribution):
         # Skewness exists for ξ < 1/3
         skew_exists = shape < 1.0 / 3.0
 
-        # Handle exponential case
-        is_exponential = jnp.abs(shape) < self._exponential_threshold
-        exponential_skewness = 2.0  # Known value for exponential distribution
-
-        # General formula
+        # The closed-form expression is exact and smooth at ξ = 0
+        # (evaluating to the exponential value 2), so no separate branch or
+        # threshold is needed — the old class-local 1e-8 threshold is gone.
         numerator = 2.0 * (1.0 + shape) * jnp.sqrt(1.0 - 2.0 * shape)
         denominator = 1.0 - 3.0 * shape
-        general_skewness = numerator / denominator
+        skewness_val = numerator / denominator
 
-        skewness_val = jnp.where(is_exponential, exponential_skewness, general_skewness)
-
-        return jnp.where(skew_exists, skewness_val, jnp.inf)
+        # NaN, not inf: beyond ξ = 1/3 the standardized third moment is
+        # undefined, unlike the variance which genuinely diverges to +inf.
+        return jnp.where(skew_exists, skewness_val, jnp.nan)
 
     def entropy(self) -> jnp.ndarray:
         """
@@ -387,26 +434,9 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Survival probabilities
         """
-        scale = jnp.asarray(self.scale)
-        shape = jnp.asarray(self.concentration)
-        value = jnp.asarray(value)
-        is_exponential = jnp.abs(shape) < self._exponential_threshold
-        safe_shape = jnp.where(is_exponential, jnp.ones_like(shape), shape)
-
-        # Below the lower support bound x < 0, survival is exactly 1.
-        value_in_support = value >= 0.0
-
-        exponential = jnp.exp(-jnp.maximum(value, 0.0) / scale)
-
-        t = 1.0 + safe_shape * value / scale
-        valid = t > 0.0
-        t_safe = jnp.where(valid, t, 1.0)
-        pareto_inside = jnp.power(t_safe, -1.0 / safe_shape)
-        boundary = jnp.where(shape < 0, 0.0, 1.0)
-        pareto = jnp.where(valid, pareto_inside, boundary)
-
-        survival = jnp.where(is_exponential, exponential, pareto)
-        return jnp.where(value_in_support, survival, 1.0)
+        # Delegate to the stable primitive so the class and functional APIs
+        # share the same smooth ξ→0 handling (no threshold to drift against).
+        return gpd_survival(value, self.scale, self.concentration)
 
     def hazard_rate(self, value: jnp.ndarray) -> jnp.ndarray:
         """
@@ -451,23 +481,8 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Cumulative hazard rate values
         """
-        scale = jnp.asarray(self.scale)
-        shape = jnp.asarray(self.concentration)
-        value = jnp.asarray(value)
-        is_exponential = jnp.abs(shape) < self._exponential_threshold
-        safe_shape = jnp.where(is_exponential, jnp.ones_like(shape), shape)
-
-        exponential = jnp.maximum(value, 0.0) / scale
-
-        t = 1.0 + safe_shape * value / scale
-        valid = t > 0.0
-        t_safe = jnp.where(valid, t, 1.0)
-        pareto_inside = jnp.log(t_safe) / safe_shape
-        boundary = jnp.where(shape < 0, jnp.inf, 0.0)
-        pareto = jnp.where(valid, pareto_inside, boundary)
-
-        cumulative_hazard = jnp.where(is_exponential, exponential, pareto)
-        return jnp.where(value >= 0.0, cumulative_hazard, 0.0)
+        # Λ(x) = -log S(x); delegate to the stable log-survival primitive.
+        return -gpd_log_survival(value, self.scale, self.concentration)
 
     def return_level(self, return_period: float | jnp.ndarray) -> jnp.ndarray:
         """Return level. Thin wrapper for ``gpd_return_level``."""
@@ -566,6 +581,11 @@ class GeneralizedParetoDistribution(dist.Distribution):
 
         Computes Hill estimator: α̂_k = (1/k) * Σᵢ₌₁ᵏ log(X_{n-i+1,n} / X_{n-k,n})
 
+        Vectorized over ``k_values`` via a cumulative sum of log order
+        statistics, so it is safe under ``jax.jit`` (the previous Python
+        loop branched on traced values and raised a ``TracerBoolConversion``
+        error). Invalid ``k`` (≤ 0 or ≥ n) yield NaN.
+
         Args:
             order_statistics: Sorted sample in descending order
             k_values: Numbers of upper order statistics to use
@@ -573,33 +593,32 @@ class GeneralizedParetoDistribution(dist.Distribution):
         Returns:
             Dictionary with Hill plot data
         """
-        n = len(order_statistics)
+        order_statistics = jnp.asarray(order_statistics)
+        k_arr = jnp.asarray(k_values)
+        n = order_statistics.shape[0]
 
-        hill_estimates = []
-        for k in k_values:
-            if k >= n or k <= 0:
-                hill_estimates.append(jnp.nan)
-                continue
-
-            # Hill estimator
-            log_ratios = jnp.log(order_statistics[:k] / order_statistics[k])
-            hill_est = jnp.mean(log_ratios)
-            hill_estimates.append(1.0 / hill_est if hill_est > 0 else jnp.inf)
+        # (1/k)·Σ_{i<k} log X_i − log X_k, for every k at once.
+        logs = jnp.log(order_statistics)
+        cumsum = jnp.cumsum(logs)
+        valid = (k_arr > 0) & (k_arr < n)
+        k_safe = jnp.clip(k_arr, 1, max(n - 1, 1))
+        mean_log_top = cumsum[k_safe - 1] / k_safe
+        hill_est = mean_log_top - logs[k_safe]
+        estimates = jnp.where(hill_est > 0, 1.0 / hill_est, jnp.inf)
+        estimates = jnp.where(valid, estimates, jnp.nan)
 
         return {
             "k_values": k_values,
-            "hill_estimates": jnp.array(hill_estimates),
+            "hill_estimates": estimates,
             "theoretical_tail_index": self.tail_index(),
         }
 
     def expand(self, batch_shape: tuple[int, ...]) -> dist.Distribution:
         """Expand to ``batch_shape`` by reconstructing via ``__init__``.
 
-        We deliberately go through the constructor so every cached
-        attribute set by ``__init__`` (e.g. ``_exponential_threshold``) is
-        present on the returned distribution. Bypassing ``__init__`` (as
-        an earlier version did) broke ``cdf``/``skew``/``kurtosis`` on
-        expanded instances.
+        We deliberately go through the constructor (rather than an
+        ``ExpandedDistribution`` wrapper) so every EVT method stays
+        available on the returned distribution.
         """
         batch_shape = tuple(batch_shape)
         if batch_shape == self.batch_shape:

@@ -23,8 +23,8 @@ def temporal_block_maxima(
     da : xr.DataArray
         Input data array
     freq : str
-        Frequency string for temporal grouping (e.g., '1Y' for annual,
-        '1M' for monthly, '7D' for weekly, '3H' for 3-hourly)
+        Frequency string for temporal grouping (e.g., 'YS' for annual,
+        'MS' for monthly, '7D' for weekly, '3h' for 3-hourly)
     time_dim : str, default 'time'
         Name of the time dimension
     min_periods : int, optional
@@ -46,13 +46,16 @@ def temporal_block_maxima(
     Examples
     --------
     >>> # Annual maxima
-    >>> annual_max = temporal_block_maxima(da, '1Y')
+    >>> annual_max = temporal_block_maxima(da, 'YS')
 
     >>> # Monthly maxima with at least 20 observations per month
-    >>> monthly_max = temporal_block_maxima(da, '1M', min_periods=20)
+    >>> monthly_max = temporal_block_maxima(da, 'MS', min_periods=20)
+
+    >>> # Seasonal maxima (3-month blocks)
+    >>> seasonal_max = temporal_block_maxima(da, '3MS')
 
     >>> # Annual maxima labelled with the day each maximum occurred
-    >>> am = temporal_block_maxima(da, 'YE', keep_time=True)
+    >>> am = temporal_block_maxima(da, 'YS', keep_time=True)
     >>> am['time_of_max']  # actual timestamps, NaT for empty blocks
     """
     resampler = da.resample({time_dim: freq})
@@ -124,6 +127,14 @@ def spatial_block_maxima(
     --------
     >>> # 10x10 spatial blocks
     >>> spatial_max = spatial_block_maxima(da, {'x': 10, 'y': 10})
+
+    >>> # 5x5 blocks along lat/lon dimensions
+    >>> spatial_max = spatial_block_maxima(da, 5, dims=['lat', 'lon'])
+
+    >>> # Require at least 50 valid points per block
+    >>> spatial_max = spatial_block_maxima(
+    ...     da, {'x': 10, 'y': 10}, min_periods=50
+    ... )
 
     >>> # 5x5 blocks, keeping the (lat, lon) of each block's maximum
     >>> sm = spatial_block_maxima(da, 5, dims=['lat', 'lon'], keep_coords=True)
@@ -224,6 +235,12 @@ def sliding_block_maxima(
     >>> # 365-day sliding window with daily stride
     >>> sliding_max = sliding_block_maxima(da, window_size=365, stride=1)
 
+    >>> # Non-overlapping 30-day blocks (equivalent to fixed blocks)
+    >>> block_max = sliding_block_maxima(da, window_size=30, stride=30)
+
+    >>> # 90-day window with 7-day stride (weekly updates)
+    >>> weekly_max = sliding_block_maxima(da, window_size=90, stride=7)
+
     >>> # Track the day each window maximum actually occurred
     >>> sm = sliding_block_maxima(da, window_size=30, keep_time=True)
     >>> sm['time_of_max']
@@ -242,15 +259,28 @@ def sliding_block_maxima(
             .rolling({dim: window_size}, center=center)
             .construct("_w")
         )
-        offset = windows.fillna(-np.inf).argmax("_w")
+        arg_offset = windows.fillna(-np.inf).argmax("_w")
         # Align with the maxima's own NaNs so windows with no data — or too few
         # valid observations for ``min_periods`` — report no coordinate.
-        arg_coord = coord_windows.isel(_w=offset).where(maxima.notnull())
+        arg_coord = coord_windows.isel(_w=arg_offset).where(maxima.notnull())
+        # Assigned before striding so the coordinate is subsampled with it.
         maxima = maxima.assign_coords({f"{dim}_of_max": arg_coord})
 
-    # Apply stride by subsampling
+    # Apply stride by subsampling, starting from the first *valid*
+    # window — the first position whose window holds at least
+    # min_periods samples. With the default min_periods == window_size
+    # that is the first complete window, so stride == window_size
+    # reproduces non-overlapping blocks (coarsen equivalence); an
+    # explicit smaller min_periods keeps the valid partial edge windows
+    # instead of discarding them. Rolling labels sit at the window end
+    # (center=False) or centre (center=True, window spanning
+    # [i - w//2, i + (w-1)//2]).
     if stride > 1:
-        maxima = maxima.isel({dim: slice(None, None, stride)})
+        if center:
+            offset = max(0, min_periods - 1 - (window_size - 1) // 2)
+        else:
+            offset = min_periods - 1
+        maxima = maxima.isel({dim: slice(offset, None, stride)})
 
     return maxima
 
@@ -282,7 +312,8 @@ def declustered_block_maxima(
         Dimension along which to decluster
     method : str, default 'runs'
         Declustering method:
-        - 'runs': Select maximum from each exceedance run
+        - 'runs': Select maximum from each exceedance run, merging runs
+          whose below-threshold gap is shorter than ``min_separation``
         - 'separation': Enforce minimum time separation between peaks
     keep_time : bool, default False
         If True, attach a ``f"{dim}_of_max"`` coordinate holding the **original
@@ -303,6 +334,11 @@ def declustered_block_maxima(
     ...     da, threshold=100, min_separation=3, method='runs'
     ... )
 
+    >>> # Heat wave maxima with 7-day separation
+    >>> heatwave_max = declustered_block_maxima(
+    ...     da, threshold=35, min_separation=7, method='separation'
+    ... )
+
     Notes
     -----
     The runs method identifies continuous periods above threshold and takes
@@ -314,9 +350,17 @@ def declustered_block_maxima(
     if method == "runs":
         # Delegate so run IDs are computed per non-`dim` slice and cannot
         # collide across batch rows (e.g. different sites).
-        reduced = decluster_runs(da, threshold=threshold, dim=dim, reduction="max")
+        # `min_separation` is the runs parameter r: below-threshold gaps
+        # shorter than it are intra-cluster.
+        reduced = decluster_runs(
+            da,
+            threshold=threshold,
+            dim=dim,
+            reduction="max",
+            min_separation=min_separation,
+        )
         if keep_time:
-            reduced = _attach_runs_argtime(reduced, da, threshold, dim)
+            reduced = _attach_runs_argtime(reduced, da, threshold, min_separation, dim)
         return reduced.dropna(dim, how="all")
 
     elif method == "separation":
@@ -338,31 +382,31 @@ def declustered_block_maxima(
 
 
 def _attach_runs_argtime(
-    reduced: xr.DataArray, da: xr.DataArray, threshold, dim: str
+    reduced: xr.DataArray, da: xr.DataArray, threshold, min_separation: int, dim: str
 ) -> xr.DataArray:
-    """Attach a ``f"{dim}_of_max"`` coord giving the true peak time per run.
+    """Attach a ``f"{dim}_of_max"`` coord giving the true peak time per cluster.
 
-    ``decluster_runs`` stores each run's max at the *last* index of the run; this
-    recovers the index of the actual maximum within each run and maps it to the
-    original coordinate, aligned to ``reduced`` (NaT where there is no run rep).
+    ``decluster_runs`` stores each cluster's max at the *last exceedance* position
+    of that cluster; this recovers the index of the actual maximum within the
+    cluster and maps it to the original coordinate, aligned to ``reduced`` (NaT
+    where there is no cluster representative).
+
+    The clustering mirrors :func:`decluster_runs` exactly — exceedance positions
+    split where at least ``min_separation`` below-threshold steps intervene, and
+    the maximum taken over the cluster's *exceedance* values only — so the
+    reported time always belongs to the value stored in ``reduced``.
     """
     exceedances = da > threshold
     coords = np.asarray(da[dim].values)
 
     def _runs_argpos_1d(values: np.ndarray, exc: np.ndarray) -> np.ndarray:
-        n = values.shape[0]
-        out = np.full(n, -1, dtype=np.int64)
-        if not exc.any():
+        out = np.full(values.shape[0], -1, dtype=np.int64)
+        positions = np.flatnonzero(exc)
+        if positions.size == 0:
             return out
-        in_run, start = False, 0
-        for i in range(n):
-            if exc[i] and not in_run:
-                start, in_run = i, True
-            elif not exc[i] and in_run:
-                out[i - 1] = start + int(np.nanargmax(values[start:i]))
-                in_run = False
-        if in_run:
-            out[n - 1] = start + int(np.nanargmax(values[start:n]))
+        breaks = np.flatnonzero(np.diff(positions) - 1 >= min_separation) + 1
+        for cluster in np.split(positions, breaks):
+            out[cluster[-1]] = int(cluster[int(np.nanargmax(values[cluster]))])
         return out
 
     argpos = xr.apply_ufunc(
@@ -419,21 +463,37 @@ def r_largest_block_maxima(
     -------
     xr.DataArray
         Array with r-largest values from each block, with new dimension 'order'.
+        For integer ``block_size``, a trailing partial block (fewer than
+        ``block_size`` samples) is trimmed and does not contribute values.
         When ``keep_time=True`` it also carries a ``f"{dim}_of_max"`` coordinate
         over ``(..., order)`` with the timestamps of those r values.
 
     Examples
     --------
     >>> # 3 largest values from each year
-    >>> annual_r_largest = r_largest_block_maxima(da, '1Y', r=3)
+    >>> annual_r_largest = r_largest_block_maxima(da, 'YS', r=3)
+
+    >>> # Top 5 values from 100-element blocks
+    >>> block_r_largest = r_largest_block_maxima(da, 100, r=5)
 
     >>> # ... and the day each of the 3 largest occurred
-    >>> rl = r_largest_block_maxima(da, 'YE', r=3, keep_time=True)
+    >>> rl = r_largest_block_maxima(da, 'YS', r=3, keep_time=True)
     >>> rl['time_of_max']
+
+    Notes
+    -----
+    The r-largest order statistics model is useful when you want to use
+    more information than just the block maximum for fitting extreme
+    value distributions.
     """
 
     def _top_r_1d(values: np.ndarray) -> np.ndarray:
-        """Top-r descending from a 1-D array, NaN-padded to length r."""
+        """Top-r descending from a 1-D array, NaN-padded to length r.
+
+        Operating per 1-D slice is what keeps non-``dim`` axes independent
+        — flattening a multi-dim block pools every non-``dim`` axis into
+        one sample and corrupts per-site r-largest extraction.
+        """
         clean = values[~np.isnan(values)]
         out = np.full(r, np.nan, dtype=float)
         if min_periods is not None and clean.size < min_periods:
@@ -466,7 +526,13 @@ def r_largest_block_maxima(
             output_core_dims=[["order"]],
             vectorize=True,
             output_dtypes=[out_dtype],
-            dask_gufunc_kwargs={"output_sizes": {"order": r}},
+            dask="parallelized",
+            dask_gufunc_kwargs={
+                "output_sizes": {"order": r},
+                # Core-dim inputs chunked along `dim` must be
+                # consolidated before the gufunc runs.
+                "allow_rechunk": True,
+            },
         )
 
     def _coord_from_pos(pos: xr.DataArray, coords: np.ndarray) -> xr.DataArray:
@@ -476,7 +542,8 @@ def r_largest_block_maxima(
         return out.where(pos >= 0)
 
     if isinstance(block_size, str):
-        # Time-based resampling; process each block as a 1-D slice.
+        # Time-based resampling; delegate to ``_apply`` over `dim` so
+        # non-``dim`` axes are processed independently per group.
         groups = da.resample({dim: block_size})
         result = groups.map(lambda g: _apply(g, _top_r_1d, float))
         result = result.assign_coords(order=np.arange(1, r + 1))
@@ -492,8 +559,18 @@ def r_largest_block_maxima(
             result = result.assign_coords({f"{dim}_of_max": times})
         return result
     else:
-        # Fixed-size blocks.
+        # Fixed-size blocks. Label each position along `dim` with its
+        # block id and groupby; for each block, run the 1-D selector per
+        # non-``dim`` slice via ``_apply``. This preserves the multi-dim
+        # structure instead of flattening every non-``dim`` axis into
+        # the block-wise top-r pool.
         n_blocks = da.sizes[dim] // block_size
+        if n_blocks == 0:
+            raise ValueError(
+                f"Series has {da.sizes[dim]} samples along {dim!r}, shorter "
+                f"than one block of size {block_size}; no block maxima can "
+                "be extracted."
+            )
         trimmed_length = n_blocks * block_size
         trimmed = da.isel({dim: slice(0, trimmed_length)})
         block_ids = np.arange(trimmed_length) // block_size
