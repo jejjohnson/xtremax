@@ -13,7 +13,7 @@ subsystem rather than dumped as one flat page:
 | [Extraction](extraction.md) | `xtremax.extraction` | xarray-native extremes extraction — block maxima, threshold selection, declustering, extremal-index estimation |
 | [Point Processes — Overview](point-processes.md) | `xtremax.point_processes` | Shared infrastructure: domains, event histories, sample results, mark/retention builders, log-intensity integration |
 | [Point Processes — Primitives](point-process-primitives.md) | `xtremax.point_processes.primitives` | Pure functions: intensities, compensators, log-probs, samplers, and diagnostics for HPP / IPP / renewal / Hawkes / marked processes |
-| [Point Processes — Operators](point-process-operators.md) | `xtremax.point_processes.operators` | `equinox.Module` process objects bundling intensity, sampling, and goodness-of-fit |
+| [Point Processes — Operators](point-process-operators.md) | `xtremax.point_processes.operators` | `equinox.Module` process objects bundling intensity and sampling; temporal operators add time-rescaling goodness-of-fit |
 | [Point Processes — Distributions](point-process-distributions.md) | `xtremax.point_processes.distributions` | NumPyro `Distribution` wrappers — point processes as likelihoods in MCMC / SVI |
 | [Simulations](simulations.md) | `xtremax.simulations` | Synthetic extremes generators: temperature / precipitation / wind, GMST trajectories, spatial fields |
 
@@ -31,8 +31,10 @@ A few patterns hold across the whole package:
 
 - **Pure functions underneath.** Every distribution and operator delegates to
   pure primitives (`gev_log_prob`, `hpp_intensity`, …) that you can call
-  directly for custom likelihoods and vmapped parameter fields. PRNG keys are
-  explicit arguments for every stochastic routine.
+  directly for custom likelihoods and vmapped parameter fields. Across the
+  distributions and point-process stack, PRNG keys are explicit arguments for
+  every stochastic routine; the `simulations` generators are the exception —
+  they are NumPy-based and take integer `seed` arguments instead.
 
 - **xarray as the data interface.** Extraction utilities take and return
   `xr.DataArray` / `xr.Dataset`, preserving coordinates, dimensions, and
@@ -46,7 +48,8 @@ A few patterns hold across the whole package:
 
 - [Vision](../design_docs/vision.md) — why xtremax exists and what it
   deliberately is not.
-- [Architecture](../design_docs/architecture.md) — the layered design:
-  primitives → components → models.
+- [Architecture](../design_docs/architecture.md) — draft roadmap for the
+  layered primitives → components → models design; parts are aspirational,
+  and this reference reflects what ships today.
 - [Interop](../interop.md) — how xtremax composes with the wider ecosystem
   without depending on it.

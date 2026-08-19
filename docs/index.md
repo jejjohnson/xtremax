@@ -4,7 +4,7 @@
 
 Built on [JAX](https://github.com/jax-ml/jax), [NumPyro](https://github.com/pyro-ppl/numpyro), [equinox](https://github.com/patrick-kidger/equinox), and [xarray](https://github.com/pydata/xarray).
 
-**New here?** Start with the [Vision](design_docs/vision.md) to understand why xtremax exists, then read the [Architecture](design_docs/architecture.md) to see how it's organized.
+**New here?** Start with the [Vision](design_docs/vision.md) to understand why xtremax exists. The [Architecture](design_docs/architecture.md) design doc is a draft roadmap — it sketches where the library is headed, not the current module layout; the [API Reference](api/index.md) reflects what ships today.
 
 ## Installation
 
@@ -55,6 +55,7 @@ Extraction utilities stay in xarray — coordinates and metadata are preserved:
 ```python
 import xtremax.extraction as xtx
 
+# da: any xr.DataArray with a "time" dimension, e.g. daily station temperatures
 annual_max = xtx.temporal_block_maxima(da, freq="YE")
 u = xtx.quantile_threshold(da, quantile=0.95)
 peaks = xtx.decluster_runs(da, threshold=u)

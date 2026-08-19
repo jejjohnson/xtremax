@@ -67,6 +67,7 @@ Extracting extremes from spatiotemporal data stays in xarray — coordinates, di
 ```python
 import xtremax.extraction as xtx
 
+# da: any xr.DataArray with a "time" dimension, e.g. daily station temperatures
 annual_max = xtx.temporal_block_maxima(da, freq="YE")       # block maxima
 u = xtx.quantile_threshold(da, quantile=0.95)               # POT threshold
 peaks = xtx.decluster_runs(da, threshold=u)                 # independent peaks
@@ -90,18 +91,18 @@ Every distribution subclasses `numpyro.distributions.Distribution`, so it plugs 
 
 The distribution math as standalone pure functions, for when you want the density without the distribution object (custom likelihoods, vmapped grids, non-stationary fields):
 
-- **Per family** — `gev_*`, `gpd_*`, `gumbel_*`, `frechet_*`, `weibull_*` variants of `log_prob` | `cdf` | `icdf` | `survival` | `mean` | `return_level`
+- **Per family** — `gev_*`, `gpd_*`, `gumbel_*`, `frechet_*`, `weibull_*` variants of `log_prob` | `cdf` | `icdf` | `mean` | `return_level`, plus `survival` / `log_survival` for the GEV and GPD families
 - **Non-stationary EVT** — `design_matrix`, `assemble_nonstationary_gev_fields`, `nonstationary_return_level`, `nonstationary_return_period`, `expected_exceedances`
 - **Spatial helpers** — `pairwise_distances`, `two_range_correlation`
 
 ### Extraction — xarray-native
 
-Turn raw spatiotemporal data into modeling-ready extremes. Everything takes and returns `xr.DataArray`:
+Turn raw spatiotemporal data into modeling-ready extremes. Inputs are `xr.DataArray`s, and array-valued results preserve coordinates and metadata; fully reduced results (`constant_threshold`, scalar `quantile_threshold`, 1-D `estimate_extremal_index`) come back as plain floats:
 
 | Group | Functions |
 |-------|-----------|
 | **Block maxima** | `temporal_block_maxima`, `spatial_block_maxima`, `sliding_block_maxima`, `r_largest_block_maxima`, `declustered_block_maxima` |
-| **Thresholds** | `constant_threshold`, `quantile_threshold`, `rolling_threshold`, `seasonal_threshold`, `temporal_threshold`, quantile-regression thresholds |
+| **Thresholds** | `constant_threshold`, `quantile_threshold`, `rolling_threshold`, `seasonal_threshold`, `temporal_threshold`, quantile-regression thresholds (needs the `xtremax[threshold]` extra) |
 | **Declustering** | `decluster_runs`, `decluster_separation`, `estimate_extremal_index` |
 
 ### Point Processes — three-tier API
@@ -111,7 +112,7 @@ Temporal, spatial, and spatiotemporal point processes — homogeneous / inhomoge
 | Tier | What it is | Examples |
 |------|-----------|----------|
 | **Primitives** | Pure functions: intensities, compensators, log-probs, samplers, diagnostics | `hpp_log_prob`, `ipp_sample_thinning`, `exp_hawkes_intensity`, `csr_ripleys_k` |
-| **Operators** | Immutable `equinox.Module` process objects bundling intensity + sampling + goodness-of-fit | `InhomogeneousPoissonProcess`, `SpatioTemporalHawkes`, `MarkedTemporalPointProcess` |
+| **Operators** | Immutable `equinox.Module` process objects bundling intensity + sampling; temporal operators add time-rescaling goodness-of-fit | `InhomogeneousPoissonProcess`, `SpatioTemporalHawkes`, `MarkedTemporalPointProcess` |
 | **Distributions** | NumPyro `Distribution` wrappers — use a point process as a likelihood in MCMC / SVI | `HomogeneousPoissonProcess`, `RenewalProcess`, `ExponentialHawkes` |
 
 Shared infrastructure: `TemporalDomain` / `RectangularDomain` for observation windows, `EventHistory` for conditioning, structured `SampleResult` types, and `GoodnessOfFit` diagnostics (time-rescaling residuals, KS statistics, Ripley's K).
