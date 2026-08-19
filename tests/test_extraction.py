@@ -493,3 +493,30 @@ class TestKeepOriginalCoordinates:
         peaks = set(pd.to_datetime(np.asarray(dc["time_of_max"].values).ravel()))
         assert time[2] in peaks  # run [9,7,8] max at index 2
         assert time[7] in peaks  # isolated 6 at index 7
+
+    def test_sliding_keep_time_masked_by_min_periods(self):
+        """Windows failing ``min_periods`` must not report a time_of_max."""
+        time = pd.date_range("2020-01-01", periods=6, freq="D")
+        values = np.array([1, 5, 2, 9, 1, 7.0])
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+        sm = sliding_block_maxima(da, 3, keep_time=True)
+        tom = np.asarray(sm["time_of_max"].values)
+        assert pd.isnull(tom[0]) and pd.isnull(tom[1])  # partial leading windows
+        assert pd.Timestamp(tom[3]) == time[3]  # first full window with max 9
+
+    def test_spatial_keep_coords_masked_by_min_periods(self):
+        """Underfilled coarsened blocks must not report a location."""
+        arr = np.arange(16).reshape(4, 4).astype(float)
+        arr[0, 0:3] = np.nan  # block (0, 0) keeps 1 of 4 values, (0, 1) keeps 3
+        da = xr.DataArray(
+            arr,
+            dims=["y", "x"],
+            coords={"y": np.arange(4) * 10.0, "x": np.arange(4) * 100.0},
+        )
+        sm = spatial_block_maxima(
+            da, {"y": 2, "x": 2}, min_periods=4, keep_coords=True
+        ).transpose("y", "x")
+        assert np.isnan(sm.values[0, 0]) and np.isnan(sm.values[0, 1])
+        assert np.isnan(sm["y_of_max"].values[0, 0])
+        assert np.isnan(sm["x_of_max"].values[0, 1])
+        assert float(sm["y_of_max"].values[1, 0]) == 30.0  # full block unaffected

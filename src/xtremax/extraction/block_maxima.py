@@ -154,8 +154,10 @@ def spatial_block_maxima(
         # argmax over the flattened within-block window.
         con = coarsened.construct({d: (d, win[d]) for d in cdims})
         stacked = con.stack(_bw=tuple(win[d] for d in cdims))
-        has_data = stacked.notnull().any("_bw")
         flat = stacked.fillna(-np.inf).argmax("_bw")
+        # Align the argmax locations with the maxima's own NaNs, so empty and
+        # ``min_periods``-masked blocks report no location.
+        valid = maxima.notnull()
         # Build each coordinate's within-block grid, broadcast over every window
         # dim, stack to match ``flat`` and select — robust to any number of dims.
         coord_windows = [
@@ -166,7 +168,7 @@ def spatial_block_maxima(
         ]
         for d, cwin in zip(cdims, xr.broadcast(*coord_windows), strict=True):
             cstacked = cwin.stack(_bw=tuple(win[dd] for dd in cdims))
-            d_of_max = cstacked.isel(_bw=flat).where(has_data)
+            d_of_max = cstacked.isel(_bw=flat).where(valid)
             maxima = maxima.assign_coords({f"{d}_of_max": d_of_max})
 
     return maxima
@@ -208,7 +210,8 @@ def sliding_block_maxima(
     keep_time : bool, default False
         If True, attach a ``f"{dim}_of_max"`` coordinate holding the **original
         coordinate** at which each window's maximum occurred (which can differ
-        from the window's own label). Windows with no valid data get NaN/NaT.
+        from the window's own label). Windows whose maximum is masked — no valid
+        data, or fewer than ``min_periods`` observations — get NaN/NaT.
 
     Returns
     -------
@@ -239,9 +242,10 @@ def sliding_block_maxima(
             .rolling({dim: window_size}, center=center)
             .construct("_w")
         )
-        has_data = windows.notnull().any("_w")
         offset = windows.fillna(-np.inf).argmax("_w")
-        arg_coord = coord_windows.isel(_w=offset).where(has_data)
+        # Align with the maxima's own NaNs so windows with no data — or too few
+        # valid observations for ``min_periods`` — report no coordinate.
+        arg_coord = coord_windows.isel(_w=offset).where(maxima.notnull())
         maxima = maxima.assign_coords({f"{dim}_of_max": arg_coord})
 
     # Apply stride by subsampling
