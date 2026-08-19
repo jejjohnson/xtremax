@@ -754,3 +754,137 @@ class TestKeepOriginalCoordinates:
         tom = pd.to_datetime(np.asarray(sm["time_of_max"].values))
         for value, stamp in zip(sm.values, tom, strict=True):
             assert float(da.sel(time=stamp)) == float(value)
+
+    def test_keep_time_distinguishes_missing_from_neg_inf(self):
+        """A genuine -inf max must not lose a tie to a missing sample.
+
+        Filling NaN with -inf (or np.nanargmax, which does so internally) makes
+        the two indistinguishable, and the earlier position wins.
+        """
+        time = pd.date_range("2020-01-01", periods=4, freq="D")
+        values = np.array([np.nan, -np.inf, -np.inf, -np.inf])
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+
+        am = temporal_block_maxima(da, "YS", keep_time=True)
+        assert pd.Timestamp(am["time_of_max"].values.ravel()[0]) == time[1]
+
+        sm = sliding_block_maxima(da, 4, min_periods=1, keep_time=True)
+        assert pd.Timestamp(np.asarray(sm["time_of_max"].values)[3]) == time[1]
+
+        grid = xr.DataArray(
+            np.array([[np.nan, -np.inf], [-np.inf, -np.inf]]),
+            dims=["y", "x"],
+            coords={"y": [0.0, 1.0], "x": [0.0, 1.0]},
+        )
+        gm = spatial_block_maxima(grid, 2, dims=["y", "x"], keep_coords=True)
+        assert float(gm["y_of_max"].values.ravel()[0]) == 0.0
+        assert float(gm["x_of_max"].values.ravel()[0]) == 1.0
+
+    def test_keep_time_survives_internal_dim_name_collision(self):
+        """Internal window dims must not clash with a caller's own dims."""
+        time = pd.date_range("2020-01-01", periods=8, freq="D")
+        da = xr.DataArray(
+            np.arange(16.0).reshape(8, 2),
+            dims=("time", "_w"),
+            coords={"time": time},
+        )
+        sm = sliding_block_maxima(da, 3, keep_time=True)
+        assert f"{'time'}_of_max" in sm.coords
+
+        for clashing in ("_bw", "_y_win", "_x_win"):
+            grid = xr.DataArray(
+                np.arange(32.0).reshape(4, 4, 2),
+                dims=("y", "x", clashing),
+                coords={"y": np.arange(4.0), "x": np.arange(4.0)},
+            )
+            gm = spatial_block_maxima(grid, 2, dims=["y", "x"], keep_coords=True)
+            assert "y_of_max" in gm.coords and "x_of_max" in gm.coords
+
+    def test_keep_time_matches_numpy_on_dask_backed_input(self):
+        """Chunked inputs must give the same answer, not raise on the indexer."""
+        dask = pytest.importorskip("dask")  # noqa: F841
+        time = pd.date_range("2020-01-01", periods=12, freq="D")
+        values = np.array([1, 5, 2, 9, 1, 1, 7, 2, 8, 3, 4, 6.0])
+        da = xr.DataArray(values, dims="time", coords={"time": time})
+        chunked = da.chunk({"time": 4})
+
+        # The coordinate must not force computation.
+        assert sliding_block_maxima(chunked, 3, keep_time=True).chunks is not None
+        assert temporal_block_maxima(chunked, "MS", keep_time=True).chunks is not None
+
+        def same(got, want):
+            # NaT never compares equal, so match the null masks separately.
+            got, want = np.asarray(got), np.asarray(want)
+            gnull, wnull = pd.isnull(got), pd.isnull(want)
+            return np.array_equal(gnull, wnull) and np.array_equal(
+                got[~gnull], want[~wnull]
+            )
+
+        assert same(
+            sliding_block_maxima(chunked, 3, keep_time=True).compute()["time_of_max"],
+            sliding_block_maxima(da, 3, keep_time=True)["time_of_max"],
+        )
+        assert same(
+            temporal_block_maxima(chunked, "MS", keep_time=True).compute()[
+                "time_of_max"
+            ],
+            temporal_block_maxima(da, "MS", keep_time=True)["time_of_max"],
+        )
+        grid = xr.DataArray(
+            np.arange(16.0).reshape(4, 4),
+            dims=("y", "x"),
+            coords={"y": np.arange(4.0), "x": np.arange(4.0)},
+        )
+        gm = spatial_block_maxima(
+            grid.chunk({"y": 2, "x": 2}), 2, dims=["y", "x"], keep_coords=True
+        ).compute()
+        expected = spatial_block_maxima(grid, 2, dims=["y", "x"], keep_coords=True)
+        assert same(gm["y_of_max"], expected["y_of_max"])
+        assert same(gm["x_of_max"], expected["x_of_max"])
+
+    def test_keep_time_on_batched_input(self):
+        """Batched (multi-dim) input: each slice's stamp must match its own max.
+
+        The coordinate grid carries no batch dims, so it has to be lined up
+        with the values before the gather.
+        """
+        time = pd.date_range("2020-01-01", periods=8, freq="D")
+        rng = np.random.RandomState(0)
+        da = xr.DataArray(
+            rng.rand(3, 8),
+            dims=("site", "time"),
+            coords={"time": time, "site": [0, 1, 2]},
+        )
+        for result in (
+            sliding_block_maxima(da, 3, keep_time=True),
+            temporal_block_maxima(da, "MS", keep_time=True),
+        ):
+            for site in da["site"].values:
+                row = result.sel(site=site)
+                stamps = pd.to_datetime(np.asarray(row["time_of_max"].values).ravel())
+                values = np.asarray(row.values).ravel()
+                for stamp, value in zip(stamps, values, strict=True):
+                    if pd.isnull(stamp) or pd.isnull(value):
+                        continue
+                    assert float(da.sel(site=site, time=stamp)) == pytest.approx(
+                        float(value)
+                    )
+
+    def test_keep_coords_on_batched_spatial_input(self):
+        """Spatial argmax locations must be per-slice, not shared across a batch."""
+        rng = np.random.RandomState(1)
+        da = xr.DataArray(
+            rng.rand(2, 4, 4),
+            dims=("t", "y", "x"),
+            coords={"t": [0, 1], "y": np.arange(4.0), "x": np.arange(4.0)},
+        )
+        sm = spatial_block_maxima(da, 2, dims=["y", "x"], keep_coords=True)
+        for t in da["t"].values:
+            row = sm.sel(t=t).transpose("y", "x")
+            for iy in range(2):
+                for ix in range(2):
+                    yv = float(row["y_of_max"].values[iy, ix])
+                    xv = float(row["x_of_max"].values[iy, ix])
+                    assert float(da.sel(t=t, y=yv, x=xv)) == pytest.approx(
+                        float(row.values[iy, ix])
+                    )
