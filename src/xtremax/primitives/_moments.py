@@ -158,6 +158,17 @@ def _series_threshold(dtype) -> float:
     return 0.15 if float(jnp.finfo(dtype).eps) > 1e-10 else 0.04
 
 
+def _as_float(x: Float[ArrayLike, ...]) -> Array:
+    """Array view of ``x`` in a floating dtype.
+
+    Integral parameters are legal (``concentration=0``, ``scale=50000``)
+    but must not stay integral: ``scale ** 2`` wraps at int32 and hands
+    back a *negative* variance, and :func:`_series_threshold` reads the
+    floating epsilon of whatever dtype it is given.
+    """
+    return jnp.asarray(x, dtype=jnp.result_type(x, float))
+
+
 def _horner(coeffs: tuple[float, ...], x: Array) -> Array:
     acc = jnp.asarray(coeffs[-1], dtype=x.dtype)
     for c in reversed(coeffs[:-1]):
@@ -177,10 +188,18 @@ def _reduced_moment(
     caller masks the non-existent branch, but both ``jnp.where`` arms are
     still evaluated, so a poled input would poison the gradient.
     """
+    # The coefficient tables run to ~1e18, so anything narrower than
+    # float32 cannot hold them: the leading coefficient would round to inf
+    # and Horner would return 0·inf = nan at the Gumbel point.
+    xi = xi.astype(jnp.promote_types(xi.dtype, jnp.float32))
     small = jnp.abs(xi) < _series_threshold(xi.dtype)
     # Double-``where`` so neither branch feeds a singular value to autodiff:
     # the exact arm never sees ξ = 0, the series arm never sees a large ξ.
-    xi_exact = jnp.where(small, 1.0, xi)
+    # The inactive-arm sentinel is -1 rather than the more usual 1: at ξ = 1
+    # every ``Γ(1 - kξ)`` here sits on a pole, and while the inner ``where``
+    # does select the resulting nan cotangent away, there is no reason to
+    # lean on that when a pole-free constant costs nothing.
+    xi_exact = jnp.where(small, -1.0, xi)
     numerator = sum(
         w * jnp.expm1(gammaln(1.0 - k * xi_exact) - k * gammaln(1.0 - xi_exact))
         for k, w in terms
@@ -203,11 +222,11 @@ def gev_variance(
     which is smooth and cancellation-free through the Gumbel limit
     :math:`\sigma^2\pi^2/6`.
     """
-    xi = jnp.asarray(shape)
+    xi = _as_float(shape)
     exists = xi < 0.5
     xi_safe = jnp.where(exists, xi, 0.0)
     r2 = _reduced_moment(xi_safe, _R2_TERMS, 2, _R2_COEFFS)
-    var = jnp.asarray(scale) ** 2 * jnp.exp(2.0 * gammaln(1.0 - xi_safe)) * r2
+    var = _as_float(scale) ** 2 * jnp.exp(2.0 * gammaln(1.0 - xi_safe)) * r2
     return jnp.where(exists, var, jnp.inf)
 
 
@@ -218,7 +237,7 @@ def gev_skewness(shape: Float[ArrayLike, ...]) -> Float[Array, ...]:
     :math:`12\sqrt{6}\,\zeta(3)/\pi^3 \approx 1.13955` at :math:`\xi = 0` and
     carries the sign of :math:`\xi` without an explicit branch.
     """
-    xi = jnp.asarray(shape)
+    xi = _as_float(shape)
     exists = xi < 1.0 / 3.0
     xi_safe = jnp.where(exists, xi, 0.0)
     r2 = _reduced_moment(xi_safe, _R2_TERMS, 2, _R2_COEFFS)
@@ -234,7 +253,7 @@ def gev_excess_kurtosis(shape: Float[ArrayLike, ...]) -> Float[Array, ...]:
     Returns :math:`r_4 / r_2^2 - 3`, which reduces to the Gumbel value
     :math:`12/5` at :math:`\xi = 0`.
     """
-    xi = jnp.asarray(shape)
+    xi = _as_float(shape)
     exists = xi < 0.25
     xi_safe = jnp.where(exists, xi, 0.0)
     r2 = _reduced_moment(xi_safe, _R2_TERMS, 2, _R2_COEFFS)

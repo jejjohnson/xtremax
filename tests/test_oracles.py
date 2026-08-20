@@ -550,10 +550,36 @@ class TestSmallShapeMoments:
         # |ξ| ≤ 1e-2 moves the true variance by at most ~3% off the limit.
         np.testing.assert_allclose(got, gumbel_var, rtol=0.03)
 
+    def test_integral_parameters_are_promoted_before_arithmetic(self):
+        """``scale=50000`` and ``concentration=0`` are legal arguments and
+        must not stay integral: an int32 ``scale ** 2`` wraps round to a
+        *negative* variance, and an integral concentration has no floating
+        epsilon to pick the series crossover from.
+        """
+        got = GeneralizedExtremeValueDistribution(0, 50000, concentration=0)
+        ref = GeneralizedExtremeValueDistribution(0.0, 50000.0, concentration=0.0)
+        assert float(got.variance) > 0.0
+        assert float(got.variance) == float(ref.variance)
+        assert float(got.skew()) == float(ref.skew())
+        assert float(got.kurtosis()) == float(ref.kurtosis())
+
+    def test_series_coefficients_outlive_narrow_input_dtypes(self):
+        """The Taylor tables reach ~1e18. Narrowed to the input dtype they
+        overflow anything below float32, and Horner then returns 0·inf =
+        nan at exactly the ξ = 0 limit the series exists to cover.
+        """
+        xi = jax.numpy.asarray(0.0, dtype=jax.numpy.float16)
+        d = GeneralizedExtremeValueDistribution(LOC, SCALE, concentration=xi)
+        np.testing.assert_allclose(float(d.skew()), 1.1395470994046486, rtol=1e-3)
+        np.testing.assert_allclose(float(d.kurtosis()), 2.4, rtol=1e-3)
+
     def test_moment_gradients_stay_finite_through_zero(self):
         """The series branch also has to be differentiable: a ``0/0``
         reaching autodiff yields a nan gradient even where the value
-        looks right.
+        looks right. Forward mode and the second derivative are checked
+        too — the inactive exact arm is evaluated at a fixed sentinel ξ,
+        and picking one that sits on a ``Γ(1 - kξ)`` pole would leave the
+        masking of its nan cotangent to do all the work.
         """
 
         def gev(shape):
@@ -564,7 +590,17 @@ class TestSmallShapeMoments:
             lambda s: gev(s).skew(),
             lambda s: gev(s).kurtosis(),
         )
+        one = np.float32(1.0)
         for xi in (0.0, 1e-8, 1e-5, 1e-2, 0.15, -0.15, -0.5):
             x = np.float32(xi)
-            grads = [float(jax.grad(moment)(x)) for moment in moments]
-            assert all(np.isfinite(g) for g in grads), (xi, grads)
+            for moment in moments:
+                d1 = float(jax.grad(moment)(x))
+                fwd = float(jax.jvp(moment, (x,), (one,))[1])
+                d2 = float(jax.grad(jax.grad(moment))(x))
+                assert np.isfinite(d1) and np.isfinite(fwd) and np.isfinite(d2), (
+                    xi,
+                    d1,
+                    fwd,
+                    d2,
+                )
+                np.testing.assert_allclose(fwd, d1, rtol=1e-4, atol=1e-5)
