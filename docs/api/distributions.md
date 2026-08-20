@@ -23,6 +23,49 @@ up front — this is the default choice unless you have reason to fix $\xi$.
       members:
         - GeneralizedExtremeValueDistribution
 
+### Ragged records: masking the likelihood
+
+Station networks rarely share a calendar. Annual maxima over $S$ stations and
+$T$ years arrive as an $(S, T)$ grid with gaps where a station had no record
+that year, and the likelihood should only see the observed station-years.
+
+Use NumPyro's masking distribution — fill the gaps with any in-support value
+(the per-station mean works) and let the mask discard them:
+
+```python
+import jax.numpy as jnp
+import numpyro
+from xtremax import GeneralizedExtremeValueDistribution as GEV
+
+filled = jnp.where(mask, maxima, station_mean[:, None])  # (S, T)
+gev = GEV(loc=mu[:, None], scale=sigma[:, None], concentration=xi[:, None])
+numpyro.sample("obs", gev.mask(mask), obs=filled)
+```
+
+`numpyro.handlers.mask(mask=mask)` around a plain `sample` is equivalent, as
+is summing `log_prob` yourself into a `numpyro.factor`:
+
+```python
+lp = gev.log_prob(filled)
+numpyro.factor("obs", jnp.where(mask, lp, 0.0).sum())
+```
+
+All three score identically. Prefer the first — `factor` creates no observed
+site, so it opts out of `Predictive`, posterior-predictive checks, and the
+per-site bookkeeping the other two keep.
+
+!!! note "Why the fill value does not bias the fit"
+
+    Masked entries contribute neither density nor gradient, so what you write
+    into the gaps cannot move the posterior. This holds even when the filler
+    falls *outside* the support: the GEV endpoint is parameter-dependent
+    ($1 + \xi(y-\mu)/\sigma > 0$), so a per-station mean can sit past a
+    $\xi < 0$ upper bound at the parameters the sampler happens to be holding.
+
+    Genuinely observed maxima are a different matter — one outside the support
+    at a trial parameter draw scores $-\infty$, which NUTS treats as an invalid
+    initialization and retries. That is recoverable; only a `nan` is not.
+
 ## Generalized Pareto
 
 The distribution for **threshold exceedances** (peaks-over-threshold). Pair it
