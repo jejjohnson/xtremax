@@ -50,9 +50,12 @@ lp = gev.log_prob(filled)
 numpyro.factor("obs", jnp.where(mask, lp, 0.0).sum())
 ```
 
-All three score identically. Prefer the first — `factor` creates no observed
-site, so it opts out of `Predictive`, posterior-predictive checks, and the
-per-site bookkeeping the other two keep.
+All three score identically. Prefer the first: `factor` *does* register an
+observed site, but an auxiliary one carrying `Unit(log_factor)` rather than the
+GEV, so everything downstream sees a summed scalar where the other two keep the
+distribution. `log_likelihood` returns one total per posterior draw instead of
+the per-observation matrix WAIC and PSIS-LOO need, and `Predictive` has no
+distribution left to draw the site from.
 
 !!! note "Why the fill value does not bias the fit"
 
@@ -63,8 +66,13 @@ per-site bookkeeping the other two keep.
     $\xi < 0$ upper bound at the parameters the sampler happens to be holding.
 
     Genuinely observed maxima are a different matter — one outside the support
-    at a trial parameter draw scores $-\infty$, which NUTS treats as an invalid
-    initialization and retries. That is recoverable; only a `nan` is not.
+    at a trial parameter draw scores $-\infty$, and `find_valid_initial_params`
+    rejects that draw (it wants a finite potential *and* finite gradients) and
+    tries another, up to 100 times. `nan` fails the same `isfinite` test, so the
+    distinction is not which one gets retried but whether retrying can help: an
+    out-of-support observation is $-\infty$ only at *some* parameters, so a later
+    draw lands somewhere valid. A `nan` leaking out of a masked-out gap is `nan`
+    at *every* parameter, and no number of retries recovers from that.
 
 ## Generalized Pareto
 

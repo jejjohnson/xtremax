@@ -1037,10 +1037,13 @@ class TestMaskedGevLikelihood:
         GEV endpoint is parameter-dependent, so a per-station mean can sit
         past a ξ < 0 upper bound at the parameters the sampler is holding.
         The mask has to zero those entries in the *gradient* as well as
-        the value — a nan escaping the discarded ``jnp.where`` branch is
-        what turns a recoverable init draw into an outright failure,
-        because ``find_valid_initial_params`` can retry past a -inf
-        potential but not past a nan one.
+        the value. ``find_valid_initial_params`` screens both nan and -inf
+        out with the same ``isfinite`` test, so the distinction that
+        matters is not which one it retries but whether retrying can help:
+        an out-of-support *observation* is -inf only at some parameters,
+        while a nan escaping the discarded ``jnp.where`` branch of a
+        masked-out gap is nan at every parameter, and all 100 retries
+        fail.
         """
         mask = jnp.array([True, True, False])
         obs = jnp.array([0.0, 1.0, 1e3])  # last entry far past the ξ<0 endpoint
