@@ -97,8 +97,9 @@ venv.bak/
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
+# mkdocs documentation (API half) and the assembled docs site
 /site
+public/
 
 # mypy
 .mypy_cache/

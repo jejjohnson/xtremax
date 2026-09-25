@@ -1238,23 +1238,6 @@ wheels = [
 ]
 
 [[package]]
-name = "mkdocs-jupyter"
-version = "0.26.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "ipykernel" },
-    { name = "jupytext" },
-    { name = "mkdocs" },
-    { name = "mkdocs-material" },
-    { name = "nbconvert" },
-    { name = "pygments" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/00/aa/f8d15409a9a3112486994a80d5a975694c7d145c4f8b5b484aeb383420ef/mkdocs_jupyter-0.26.3.tar.gz", hash = "sha256:e1e8bd48a1b96542e84e3028e3066112bac7b94d95ab69f8b91305c84003ca26", size = 1628353, upload-time = "2026-04-17T18:56:31.517Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/13/95/cf3f7fe4910cf0365fa8ea0c731f4b8a624d97cd76ea777913ac8d0868e2/mkdocs_jupyter-0.26.3-py3-none-any.whl", hash = "sha256:cd6644fb578131157194d750fd4d10fc2fd8f1e84e00036ee62df3b5b4b84c82", size = 1459740, upload-time = "2026-04-17T18:56:30.031Z" },
-]
-
-[[package]]
 name = "mkdocs-material"
 version = "9.7.6"
 source = { registry = "https://pypi.org/simple" }
@@ -2522,7 +2505,7 @@ wheels = [
 
 [[package]]
 name = "xtremax"
-version = "0.0.1"
+version = "0.0.3"
 source = { editable = "." }
 dependencies = [
     { name = "einops" },
@@ -2556,9 +2539,9 @@ docs = [
     { name = "jupytext" },
     { name = "matplotlib" },
     { name = "mkdocs" },
-    { name = "mkdocs-jupyter" },
     { name = "mkdocs-material" },
     { name = "mkdocstrings", extra = ["python"] },
+    { name = "nbconvert" },
     { name = "optax" },
     { name = "pygments" },
     { name = "watermark" },
@@ -2574,8 +2557,8 @@ typecheck = [
 requires-dist = [
     { name = "einops", specifier = ">=0.7" },
     { name = "equinox", specifier = ">=0.11" },
-    { name = "jax", specifier = ">=0.4,<0.11" },
-    { name = "jaxlib", specifier = ">=0.4,<0.11" },
+    { name = "jax", specifier = ">=0.4,<0.12" },
+    { name = "jaxlib", specifier = ">=0.4,<0.12" },
     { name = "jaxtyping", specifier = ">=0.2" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "numpyro", specifier = ">=0.21" },
@@ -2600,11 +2583,11 @@ docs = [
     { name = "jupytext", specifier = ">=1.19.1" },
     { name = "matplotlib", specifier = ">=3.8" },
     { name = "mkdocs", specifier = ">=1.6.1" },
-    { name = "mkdocs-jupyter", specifier = ">=0.26.2" },
     { name = "mkdocs-material", specifier = ">=9.7.6" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.3" },
+    { name = "nbconvert", specifier = ">=7.16.6" },
     { name = "optax", specifier = ">=0.2.8" },
-    { name = "pygments", specifier = ">=2.19,<2.20" },
+    { name = "pygments", specifier = ">=2.19,<2.22" },
     { name = "watermark", specifier = ">=2.4" },
 ]
 lint = [{ name = "ruff", specifier = ">=0.15.10" }]

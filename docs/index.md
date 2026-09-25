@@ -4,7 +4,7 @@
 
 Built on [JAX](https://github.com/jax-ml/jax), [NumPyro](https://github.com/pyro-ppl/numpyro), [equinox](https://github.com/patrick-kidger/equinox), and [xarray](https://github.com/pydata/xarray).
 
-**New here?** Start with the [Vision](design_docs/vision.md) to understand why xtremax exists. The [Architecture](design_docs/architecture.md) design doc is a draft roadmap — it sketches where the library is headed, not the current module layout; the [API Reference](api/index.md) reflects what ships today.
+**New here?** Start with the [Vision](design_docs/vision.md) to understand why xtremax exists. The [Architecture](design_docs/architecture.md) design doc is a draft roadmap — it sketches where the library is headed, not the current module layout; the [API Reference](https://jejjohnson.github.io/xtremax/reference/) reflects what ships today.
 
 ## Installation
 
@@ -89,8 +89,8 @@ peaks = xtx.decluster_runs(da, threshold=u)
 
 ## Links
 
-- [API Reference](api/index.md)
-- [Design docs](design_docs/README.md)
+- [API Reference](https://jejjohnson.github.io/xtremax/reference/)
+- [Design docs](design_docs/design_overview.md)
 - [Interop](interop.md)
 - [Changelog](changelog.md)
 - [GitHub](https://github.com/jejjohnson/xtremax)

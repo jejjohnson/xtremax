@@ -56,12 +56,17 @@ typecheck = [
     "ty>=0.0.30",
 ]
 docs = [
+    # The prose half of the site is built by mystmd, a Node CLI installed with
+    # `npm install -g mystmd` rather than through uv. See docs/README.md.
+    # MkDocs here builds only the API reference, whose `objects.inv` is what
+    # lets the MyST prose cross-reference into it.
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.6",
     "mkdocstrings[python]>=1.0.3",
-    "mkdocs-jupyter>=0.26.2",
     "jupytext>=1.19.1",
     "ipykernel>=7.2.0",
+    # Executes notebooks for docs/notebooks (see the docs-examples instructions).
+    "nbconvert>=7.16.6",
     # matplotlib + watermark used by the example notebooks during local
     # re-execution. The guarded watermark cell in each notebook no-ops
     # if the package is missing, but installing it here lets the version
