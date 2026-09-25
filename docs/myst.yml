@@ -85,6 +85,35 @@ project:
         - title: Neural / Advanced
           children:
             - file: notebooks/latent_ode_ipp.ipynb
+    - title: Tutorials
+      children:
+        - file: tutorials/spatial_extremes.md
+          children:
+            - title: Data
+              children:
+                - file: tutorials/spatial_extremes/00_data/00_cds_insitu_iberia.ipynb
+            - title: EVT Foundations
+              children:
+                - file: tutorials/spatial_extremes/01_evt_foundations/01_block_maxima.ipynb
+                - file: tutorials/spatial_extremes/01_evt_foundations/02_gev_one_station.ipynb
+                - file: tutorials/spatial_extremes/01_evt_foundations/03_extremal_types.ipynb
+                - file: tutorials/spatial_extremes/01_evt_foundations/03_return_levels.ipynb
+            - title: Pooling & GPs
+              children:
+                - file: tutorials/spatial_extremes/02_pooling/04_many_stations_independent.ipynb
+                - file: tutorials/spatial_extremes/02_pooling/04_many_stations_laplace.ipynb
+                - file: tutorials/spatial_extremes/02_pooling/05_hierarchical_pooling.ipynb
+                - file: tutorials/spatial_extremes/02_pooling/06_gp_primer.ipynb
+            - title: Spatial GEV
+              children:
+                - file: tutorials/spatial_extremes/03_spatial_gev/07_spatial_gp_mu.ipynb
+                - file: tutorials/spatial_extremes/03_spatial_gev/08_spatial_gp_mu_sigma.ipynb
+                - file: tutorials/spatial_extremes/03_spatial_gev/09_spatial_gp_mu_sigma_xi.ipynb
+            - title: Non-stationary
+              children:
+                - file: tutorials/spatial_extremes/04_nonstationary/10_nonstationary_parametric.ipynb
+                - file: tutorials/spatial_extremes/04_nonstationary/11_nonstationary_ode.ipynb
+                - file: tutorials/spatial_extremes/04_nonstationary/12_nonstationary_gp.ipynb
     - title: Design
       children:
         - file: design_docs/design_overview.md

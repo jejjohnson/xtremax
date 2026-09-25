@@ -87,6 +87,10 @@ peaks = xtx.decluster_runs(da, threshold=u)
 - *Spatiotemporal*: [homogeneous](notebooks/hpp_spatiotemporal_from_scratch_and_numpyro.ipynb), [inhomogeneous](notebooks/ipp_spatiotemporal_from_scratch_and_numpyro.ipynb), [marked](notebooks/marked_spatiotemporal_from_scratch_and_numpyro.ipynb), [Hawkes / ETAS](notebooks/hawkes_spatiotemporal_from_scratch_and_numpyro.ipynb)
 - *Neural*: [latent ODE for irregular IPPs](notebooks/latent_ode_ipp.ipynb)
 
+**Tutorials** — a longer, real-data curriculum:
+
+- [Spatial extremes](tutorials/spatial_extremes.md) — from one station's annual maxima to spatial GEV fields and non-stationary trends, on CDS station data over Spain
+
 ## Links
 
 - [API Reference](https://jejjohnson.github.io/xtremax/reference/)
