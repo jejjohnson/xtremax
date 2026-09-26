@@ -124,6 +124,8 @@ public/
 .claude/worktrees/
 
 # Spatial-extremes tutorials: CDS cache, derived features and fetch logs are
-# reproducible via docs/tutorials/spatial_extremes/_helpers/scripts/.
+# reproducible via docs/tutorials/spatial_extremes/_helpers/scripts/; data/results/
+# holds the cross-notebook warm-start fits written by spatial_extremes.results.
 docs/tutorials/spatial_extremes/data/
+docs/tutorials/spatial_extremes/data/results/
 docs/tutorials/spatial_extremes/logs/

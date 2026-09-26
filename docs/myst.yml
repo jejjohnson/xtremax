@@ -114,6 +114,13 @@ project:
                 - file: tutorials/spatial_extremes/04_nonstationary/10_nonstationary_parametric.ipynb
                 - file: tutorials/spatial_extremes/04_nonstationary/11_nonstationary_ode.ipynb
                 - file: tutorials/spatial_extremes/04_nonstationary/12_nonstationary_gp.ipynb
+            - title: Improvements
+              children:
+                - file: tutorials/spatial_extremes/05_improvements/13_inference_benchmark.ipynb
+                - file: tutorials/spatial_extremes/05_improvements/14_coregionalization.ipynb
+                - file: tutorials/spatial_extremes/05_improvements/15_pathwise_sampling.ipynb
+                - file: tutorials/spatial_extremes/05_improvements/16_scale_field.ipynb
+                - file: tutorials/spatial_extremes/05_improvements/17_markov_gp_trend.ipynb
     - title: Design
       children:
         - file: design_docs/design_overview.md

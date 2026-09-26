@@ -89,14 +89,28 @@ tutorials = [
     # docs/tutorials/spatial_extremes/. The notebooks ship pre-executed, so the
     # docs build never needs these. Install with `uv sync --group tutorials`.
     # See docs/tutorials/spatial_extremes.md for CDS credentials and data.
-    "xrreader[cds-insitu]",
+    # The reader lives in the xr_toolz monorepo as the `xrtoolz-reader`
+    # distribution; its import name is still `xrreader`.
+    "xrtoolz-reader[cds-insitu]",
+    # pyrox-gp (kernels, GPPrior, guides) was split out of the old single
+    # pyrox package; `pyrox` (its Equinox<->NumPyro core) is listed explicitly
+    # because the PyPI name "pyrox" is an unrelated project.
+    "pyrox-gp",
     "pyrox",
     "optax>=0.2",
     "diffrax>=0.7.2",
     "cartopy>=0.22",
     "shapely>=2.0",
     "pyproj>=3.6",
-    "matplotlib>=3.8",
+    # matplotlib is capped below 3.11: cartopy 0.25 declares `matplotlib>=3.6`
+    # with no ceiling, but its gridliner still uses the `Locator.locs` attribute
+    # that 3.11 deprecated (SciTools/cartopy#2696). The visible symptom is not
+    # an error — a map drawn with gridline labels *and* a colorbar computes a
+    # collapsed tight bounding box, so `bbox_inches="tight"` (what the notebook
+    # inline backend uses) crops the figure down to the bare colorbar and the
+    # map silently vanishes. Lift this once cartopy ships a 3.11-compatible
+    # gridliner.
+    "matplotlib>=3.8,<3.11",
     "pandas>=2.0",
     "seaborn>=0.13",
     "loguru>=0.7",
@@ -186,8 +200,11 @@ show_missing = true
 # Ported snippets ship with smoke tests only; raise toward 80% as v0.1 matures.
 fail_under = 40
 
-# pyrox and xrreader are not on PyPI yet; the `tutorials` group resolves them
-# from their public git repositories.
+# pyrox, pyrox-gp and xrtoolz-reader are not on PyPI; the `tutorials` group
+# resolves them from their public git repositories. pyrox and pyrox-gp are
+# subpackages of the pyrox uv workspace; xrtoolz-reader is a subpackage of the
+# xr_toolz monorepo.
 [tool.uv.sources]
-pyrox = { git = "https://github.com/jejjohnson/pyrox.git", rev = "395251388c8bbad50fe1bf929733b0a481d4e9ef" }
-xrreader = { git = "https://github.com/jejjohnson/xrreader.git" }
+pyrox-gp = { git = "https://github.com/jejjohnson/pyrox.git", subdirectory = "packages/pyrox-gp" }
+pyrox = { git = "https://github.com/jejjohnson/pyrox.git", subdirectory = "packages/pyrox" }
+xrtoolz-reader = { git = "https://github.com/jejjohnson/xr_toolz.git", subdirectory = "packages/xrtoolz-reader" }

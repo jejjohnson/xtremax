@@ -15,9 +15,9 @@ Four packages do the heavy lifting, one per layer:
 
 | Layer | Package | Role |
 |-------|---------|------|
-| Data | [`xrreader`](https://github.com/jejjohnson/xrreader) | pull + cache CDS in-situ land stations over Iberia |
+| Data | [`xrtoolz-reader`](https://github.com/jejjohnson/xr_toolz/tree/main/packages/xrtoolz-reader) | pull + cache CDS in-situ land stations over Iberia (import name: `xrreader`) |
 | Extremes | [`xtremax`](https://github.com/jejjohnson/xtremax) | block-maxima extraction, GEV distribution, return levels |
-| Gaussian processes | [`pyrox`](https://github.com/jejjohnson/pyrox) | kernels, latent GP fields, variational inference |
+| Gaussian processes | [`pyrox-gp`](https://github.com/jejjohnson/pyrox/tree/main/packages/pyrox-gp) | kernels, latent GP fields, variational inference |
 | Dynamics | [`diffrax`](https://github.com/patrick-kidger/diffrax) | ODE/SDE integration for the time-varying trends (10–12) |
 
 From xtremax the tutorials use
@@ -42,7 +42,7 @@ resumable download. See [](#spatial-extremes-rerun) to reproduce them.
 Each notebook is short and adds exactly one idea.
 
 **00 — Data.** [Pull daily near-surface air temperature](spatial_extremes/00_data/00_cds_insitu_iberia.ipynb)
-for Spanish land stations from CDS with `xrreader`, cache it, and look at it.
+for Spanish land stations from CDS with `xrtoolz-reader`, cache it, and look at it.
 
 **01–03 — Extreme-value foundations (one station).**
 [01](spatial_extremes/01_evt_foundations/01_block_maxima.ipynb) turns a daily
@@ -63,7 +63,7 @@ with a fast Laplace approximation, then maps the parameters — the noisy result
 motivates pooling. [05](spatial_extremes/02_pooling/05_hierarchical_pooling.ipynb)
 pools them with a **hierarchical** Bayesian model.
 [06](spatial_extremes/02_pooling/06_gp_primer.ipynb) is a Gaussian-process
-primer with `pyrox`: interpolate a field over `(lon, lat)`, then add physical
+primer with `pyrox-gp`: interpolate a field over `(lon, lat)`, then add physical
 features (elevation, distance-to-coast, slope) and use ARD to see which
 actually matter.
 
@@ -92,6 +92,60 @@ integrated random walk, the stochastic sibling of the ODE), shows why a free
 stationary GP over-fits a short record, and puts all three trends on one set of
 axes.
 
+**13–17 — Improvements.** Revisit the models above with the rest of the
+`pyrox-gp` toolbox, one question per notebook.
+[13](spatial_extremes/05_improvements/13_inference_benchmark.ipynb) benchmarks
+structured variational guides against site-based approximations (Laplace,
+Gauss–Newton, posterior linearisation, EP) for a latent GP under a GEV
+likelihood.
+[14](spatial_extremes/05_improvements/14_coregionalization.ipynb) replaces 09's
+independent fields with a **linear model of coregionalization**, so $\mu$,
+$\log\sigma$ and $\xi$ can share latent structure.
+[15](spatial_extremes/05_improvements/15_pathwise_sampling.ipynb) draws **joint**
+posterior fields with Matheron's rule to answer regional questions a marginal
+map cannot.
+[16](spatial_extremes/05_improvements/16_scale_field.ipynb) diagnoses why 08's
+scale GP explains only one percent of the variation in $\log\sigma$.
+[17](spatial_extremes/05_improvements/17_markov_gp_trend.ipynb) rewrites 12's
+trend as a **Markov GP**, with Kalman recursions in place of sampling the latent
+path.
+
+:::{warning} Known issues
+A review of these notebooks left open findings — mostly in the Improvements
+notebooks and the warm-start cache — that have not been fixed yet. They are
+tracked in [this issue](https://github.com/jejjohnson/xtremax/issues/106); read the affected notebooks with it
+in mind.
+:::
+
+(spatial-extremes-warm-starts)=
+## Warm starts across notebooks
+
+Several notebooks fit the same quantities more than once: the Laplace
+approximation of 04b re-derives what 04 samples, 12 compares against the ODE 11
+already fitted, and every spatial model estimates a location for *every*
+station — Albacete included, long before 10–12 study it alone.
+
+The helper module `spatial_extremes.results` lets a notebook publish a fit and
+a later one start from it, the Bayesian analogue of a pretrained checkpoint:
+
+| Artifact | Published by | Used by |
+|---|---|---|
+| `gp_primer_hypers` | 06 | 07, 08, 09 — the fitted Matérn lengthscale, replacing a hard-coded literal; also 14, 16 |
+| `laplace_no_pool` | 04b | 04 — seeds NUTS, which then needs a much shorter warmup; also 16 |
+| `spatial_gp_mu` | 07 | 08, 09 (whitened field + scalars), 12 (Albacete's location, scale, shape); also 13, 15 |
+| `ode_gev_albacete` | 11 | 12 — loads the posterior instead of refitting the ODE |
+
+Warm starts are **initialisation only**: they move where a sampler or optimiser
+begins, never what it targets, so the posterior is unchanged. (Feeding a fitted
+result back as a *prior* would be different — and wrong here, since it would
+count the same maxima twice.)
+
+The cache lives beside the data cache (`<cache_root>/results/`, gitignored) and
+is entirely optional. Every consumer falls back to a cold start when an artifact
+is missing, so a fresh clone runs each notebook standalone and offline; running
+the curriculum in order simply populates the cache and makes the later notebooks
+faster and better-anchored.
+
 (spatial-extremes-rerun)=
 ## Re-running the notebooks
 
@@ -114,9 +168,15 @@ plain `uv sync` does not install:
 uv sync --group tutorials --group docs
 ```
 
-It adds `xrreader[cds-insitu]` and a pinned pre-workspace-split `pyrox` (both
-from GitHub, since neither is on PyPI yet), plus `cartopy`, `shapely`, `pyproj`,
-`seaborn`, `loguru`, `optax` and `diffrax`.
+It adds `xrtoolz-reader[cds-insitu]` (from the `xr_toolz` monorepo; it still
+imports as `xrreader`) and `pyrox-gp` with its `pyrox` core (from the `pyrox`
+workspace) — all from GitHub, since none is on PyPI — plus `cartopy`,
+`shapely`, `pyproj`, `seaborn`, `loguru`, `optax` and `diffrax`. It also caps
+`matplotlib<3.11`: cartopy's gridliner still relies on an attribute 3.11
+deprecated ([SciTools/cartopy#2696](https://github.com/SciTools/cartopy/issues/2696)),
+and on 3.11 a map with gridline labels and a colorbar is cropped away to the
+bare colorbar. The lockfile resolves the whole project once, so the other
+dependency groups get a pre-3.11 matplotlib too.
 
 ### 2. (Optional) Fetch the real CDS data
 
