@@ -1,5 +1,8 @@
 # xtremax
 
+> [!IMPORTANT]
+> **xtremax has moved into the pyrox workspace as [`pyrox-xtreme`](https://github.com/jejjohnson/pyrox/tree/main/packages/pyrox-xtreme)** (import `pyrox_xtreme`), with its history, and this repository is archived. Install it with `uv add "pyrox-xtreme @ git+https://github.com/jejjohnson/pyrox.git#subdirectory=packages/pyrox-xtreme"`, replace `import xtremax` with `import pyrox_xtreme`, and open issues and pull requests on [jejjohnson/pyrox](https://github.com/jejjohnson/pyrox). The open issues from this repository were transferred there.
+
 [![Tests](https://github.com/jejjohnson/xtremax/actions/workflows/tests-extended.yml/badge.svg?branch=main)](https://github.com/jejjohnson/xtremax/actions/workflows/tests-extended.yml)
 [![Lint](https://github.com/jejjohnson/xtremax/actions/workflows/lint.yml/badge.svg)](https://github.com/jejjohnson/xtremax/actions/workflows/lint.yml)
 [![Type Check](https://github.com/jejjohnson/xtremax/actions/workflows/typecheck.yml/badge.svg)](https://github.com/jejjohnson/xtremax/actions/workflows/typecheck.yml)
